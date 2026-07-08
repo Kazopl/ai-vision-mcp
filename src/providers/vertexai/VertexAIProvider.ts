@@ -1,0 +1,773 @@
+/**
+ * Vertex AI provider implementation
+ */
+
+import { GoogleGenAI } from '@google/genai';
+import { BaseVisionProvider } from '../base/VisionProvider.js';
+import { FUNCTION_NAMES } from '../../constants/FunctionNames.js';
+import type {
+  VertexAIConfig,
+  AnalysisOptions,
+  AnalysisResult,
+  UploadedFile,
+  HealthStatus,
+  ProviderCapabilities,
+  ModelCapabilities,
+  ProviderInfo,
+} from '../../types/Providers.js';
+import {
+  ProviderError,
+  FileUploadError,
+  NetworkError,
+} from '../../types/Errors.js';
+import { RetryHandler } from '../../utils/retry.js';
+import { formatDuration } from '../../utils/duration.js';
+import { processVideoSource } from '../../utils/videoSourceHandler.js';
+import { processImageSource } from '../../utils/imageSourceHandler.js';
+
+export class VertexAIProvider extends BaseVisionProvider {
+  private client: GoogleGenAI;
+  private config: VertexAIConfig;
+
+  constructor(config: VertexAIConfig) {
+    super('vertex_ai', config.imageModel, config.videoModel);
+    this.config = config;
+
+    // Ensure endpoint is set, use default if not provided
+    const endpoint = config.endpoint || 'https://aiplatform.googleapis.com';
+
+    // Validate endpoint format
+    this.validateEndpoint(endpoint);
+
+    // Initialize GoogleGenAI client with Vertex AI configuration
+    const clientConfig: any = {
+      vertexai: true,
+      project: config.projectId,
+      location: config.location,
+    };
+
+    // Add custom base URL if not using default Google endpoint
+    if (endpoint !== 'https://aiplatform.googleapis.com') {
+      clientConfig.baseUrl = endpoint;
+    }
+
+    // Add authentication if credentials are provided
+    if (config.clientEmail && config.privateKey) {
+      // Use credentials object directly
+      clientConfig.googleAuthOptions = {
+        credentials: {
+          client_email: config.clientEmail,
+          private_key: config.privateKey,
+        },
+      };
+      console.error(
+        `[VertexAI Provider] Using service account credentials for: ${config.clientEmail}`
+      );
+    } else {
+      console.error(
+        '[VertexAI Provider] No credentials provided - using Application Default Credentials (ADC)'
+      );
+    }
+
+    this.client = new GoogleGenAI(clientConfig);
+
+    // Log debug information
+    this.logDebugInfo();
+  }
+
+  async analyzeImage(
+    imageSource: string,
+    prompt: string,
+    options?: AnalysisOptions
+  ): Promise<AnalysisResult> {
+    try {
+      const { result: analysisResult } = await RetryHandler.withRetry(
+        async () => {
+          return await this.analyzeImageOnce(imageSource, prompt, options);
+        },
+        {
+          // Prefer a couple quick retries for transient rate limits/network.
+          maxRetries: 2,
+          baseDelay: 1500,
+          maxDelay: 20000,
+          retryableErrors: ['RATE_LIMIT_EXCEEDED', 'NETWORK_ERROR'],
+          onRetry: (attempt, err) => {
+            console.error(
+              `[VertexAIProvider] Retry analyzeImage attempt ${attempt}: ${err.message}`
+            );
+          },
+        }
+      );
+
+      return analysisResult;
+    } catch (error) {
+      throw this.handleError(error, 'image analysis');
+    }
+  }
+
+  private async analyzeImageOnce(
+    imageSource: string,
+    prompt: string,
+    options?: AnalysisOptions
+  ): Promise<AnalysisResult> {
+    try {
+      // Process image source using shared utility
+      const {
+        fileUri,
+        mimeType,
+        isInlineData,
+        processingDuration: sourceProcessingDuration,
+      } = await processImageSource(imageSource);
+
+      // Handle file references and GCS URIs
+      if (!isInlineData) {
+        const model = this.resolveModelForFunction(
+          'image',
+          options?.functionName
+        );
+
+        const enabled =
+          process.env.AI_VISION_LOG_MODELS === '1' ||
+          process.env.LOG_LEVEL === 'debug';
+        if (enabled) {
+          void this.logger.info(
+            {
+              msg: 'Vertex AI request (image)',
+              projectId: this.config.projectId,
+              location: this.config.location,
+              model,
+              functionName: options?.functionName ?? null,
+            },
+            'models'
+          );
+        }
+
+        // ultra_high media resolution must live on the media Part itself
+        const filePart: any = {
+          fileData: {
+            mimeType,
+            fileUri,
+          },
+        };
+        const filePartResolution = this.getPartMediaResolution(
+          'image',
+          options
+        );
+        if (filePartResolution) {
+          filePart.mediaResolution = filePartResolution;
+        }
+
+        const { result: response, duration } = await this.measureAsync(
+          async () => {
+            return await this.client.models.generateContent({
+              model,
+              contents: [
+                {
+                  role: 'user',
+                  parts: [filePart, { text: prompt }],
+                },
+              ],
+              config: this.buildConfigWithOptions(
+                'image',
+                options?.functionName,
+                options
+              ),
+            });
+          }
+        );
+
+        const text = response.text || '';
+        const usage = response.usageMetadata;
+
+        return this.createAnalysisResult(
+          text,
+          model,
+          usage &&
+            usage.promptTokenCount &&
+            usage.candidatesTokenCount &&
+            usage.totalTokenCount
+            ? {
+                promptTokenCount: usage.promptTokenCount,
+                candidatesTokenCount: usage.candidatesTokenCount,
+                totalTokenCount: usage.totalTokenCount,
+              }
+            : undefined,
+          sourceProcessingDuration + duration,
+          mimeType,
+          undefined,
+          response.modelVersion,
+          response.responseId
+        );
+      }
+
+      // Handle inline data (data URIs)
+      const base64Data = fileUri.split(',')[1];
+      const model = this.resolveModelForFunction(
+        'image',
+        options?.functionName
+      );
+
+      const enabled =
+        process.env.AI_VISION_LOG_MODELS === '1' ||
+        process.env.LOG_LEVEL === 'debug';
+      if (enabled) {
+        void this.logger.info(
+          {
+            msg: 'Vertex AI request (image)',
+            projectId: this.config.projectId,
+            location: this.config.location,
+            model,
+            functionName: options?.functionName ?? null,
+          },
+          'models'
+        );
+      }
+
+      // ultra_high media resolution must live on the media Part itself
+      const inlinePart: any = {
+        inlineData: {
+          mimeType,
+          data: base64Data,
+        },
+      };
+      const inlinePartResolution = this.getPartMediaResolution(
+        'image',
+        options
+      );
+      if (inlinePartResolution) {
+        inlinePart.mediaResolution = inlinePartResolution;
+      }
+
+      const { result: response, duration } = await this.measureAsync(
+        async () => {
+          return await this.client.models.generateContent({
+            model,
+            contents: [
+              {
+                role: 'user',
+                parts: [inlinePart, { text: prompt }],
+              },
+            ],
+            config: this.buildConfigWithOptions(
+              'image',
+              options?.functionName,
+              options
+            ),
+          });
+        }
+      );
+
+      const text = response.text || '';
+      const usage = response.usageMetadata;
+
+      return this.createAnalysisResult(
+        text,
+        model,
+        usage &&
+          usage.promptTokenCount &&
+          usage.candidatesTokenCount &&
+          usage.totalTokenCount
+          ? {
+              promptTokenCount: usage.promptTokenCount,
+              candidatesTokenCount: usage.candidatesTokenCount,
+              totalTokenCount: usage.totalTokenCount,
+            }
+          : undefined,
+        sourceProcessingDuration + duration,
+        mimeType,
+        Buffer.from(base64Data, 'base64').length,
+        response.modelVersion,
+        response.responseId
+      );
+    } catch (error) {
+      throw this.handleError(error, 'image analysis');
+    }
+  }
+
+  async compareImages(
+    imageSources: string[],
+    prompt: string,
+    options?: AnalysisOptions
+  ): Promise<AnalysisResult> {
+    try {
+      console.error(
+        `[VertexAIProvider] Comparing ${imageSources.length} images`
+      );
+
+      // Process all images to create parts
+      const imageParts: any[] = [];
+      let totalFileSize = 0;
+      let totalProcessingDuration = 0;
+
+      for (let i = 0; i < imageSources.length; i++) {
+        const imageSource = imageSources[i];
+        console.error(
+          `[VertexAIProvider] Processing image ${i + 1}: ${imageSource.substring(0, 100)}${imageSource.length > 100 ? '...' : ''}`
+        );
+
+        // Process image source using shared utility
+        const {
+          fileUri,
+          mimeType,
+          isInlineData,
+          processingDuration: sourceProcessingDuration,
+        } = await processImageSource(imageSource);
+
+        totalProcessingDuration += sourceProcessingDuration;
+
+        if (isInlineData && fileUri.startsWith('data:')) {
+          // Extract base64 data from data URI
+          const base64Data = fileUri.split(',')[1];
+          const fileSize = Buffer.from(base64Data, 'base64').length;
+          totalFileSize += fileSize;
+
+          imageParts.push({
+            inlineData: {
+              mimeType,
+              data: base64Data,
+            },
+          });
+        } else {
+          // Use fileData for GCS URIs, file references, and generativelanguage.googleapis.com URIs
+          imageParts.push({
+            fileData: {
+              mimeType,
+              fileUri,
+            },
+          });
+        }
+      }
+
+      // ultra_high media resolution must live on each media Part itself
+      const comparePartResolution = this.getPartMediaResolution(
+        'image',
+        options
+      );
+      if (comparePartResolution) {
+        for (const part of imageParts) {
+          part.mediaResolution = comparePartResolution;
+        }
+      }
+
+      // Add the prompt as the last part
+      imageParts.push({ text: prompt });
+
+      const model = this.resolveModelForFunction(
+        'image',
+        options?.functionName
+      );
+
+      const enabled =
+        process.env.AI_VISION_LOG_MODELS === '1' ||
+        process.env.LOG_LEVEL === 'debug';
+      if (enabled) {
+        void this.logger.info(
+          {
+            msg: 'Vertex AI request (compare_images)',
+            projectId: this.config.projectId,
+            location: this.config.location,
+            model,
+            functionName: options?.functionName ?? null,
+            imageCount: imageSources.length,
+          },
+          'models'
+        );
+      }
+
+      const { result: response, duration } = await this.measureAsync(
+        async () => {
+          return await this.client.models.generateContent({
+            model,
+            contents: [
+              {
+                role: 'user',
+                parts: imageParts,
+              },
+            ],
+            config: this.buildConfigWithOptions(
+              'image',
+              options?.functionName,
+              options
+            ),
+          });
+        }
+      );
+
+      const text = response.text || '';
+      const usage = response.usageMetadata;
+
+      return this.createAnalysisResult(
+        text,
+        model,
+        usage &&
+          usage.promptTokenCount &&
+          usage.candidatesTokenCount &&
+          usage.totalTokenCount
+          ? {
+              promptTokenCount: usage.promptTokenCount,
+              candidatesTokenCount: usage.candidatesTokenCount,
+              totalTokenCount: usage.totalTokenCount,
+            }
+          : undefined,
+        totalProcessingDuration + duration,
+        'image/multiple',
+        totalFileSize,
+        response.modelVersion,
+        response.responseId
+      );
+    } catch (error) {
+      throw this.handleError(error, 'image comparison');
+    }
+  }
+
+  async analyzeVideo(
+    videoSource: string,
+    prompt: string,
+    options?: AnalysisOptions
+  ): Promise<AnalysisResult> {
+    try {
+      const { fileUri, mimeType, uploadDuration, isInlineData } =
+        await processVideoSource(videoSource);
+
+      const model = this.resolveModelForFunction(
+        'video',
+        options?.functionName
+      );
+
+      const enabled =
+        process.env.AI_VISION_LOG_MODELS === '1' ||
+        process.env.LOG_LEVEL === 'debug';
+      if (enabled) {
+        void this.logger.info(
+          {
+            msg: 'Vertex AI request (video)',
+            projectId: this.config.projectId,
+            location: this.config.location,
+            model,
+            functionName: options?.functionName ?? null,
+          },
+          'models'
+        );
+      }
+
+      // Build video metadata for the request if provided.
+      // Per the Gemini API, videoMetadata must live on the media Part itself
+      // (next to inlineData/fileData), not at the request top level.
+      const videoMetadata = this.buildVideoMetadata(options?.videoMetadata);
+
+      // Build the content part based on whether it's inline data or file reference
+      const videoPart: any = isInlineData
+        ? {
+            inlineData: {
+              mimeType,
+              data: fileUri.split(',')[1], // Extract base64 data from data URI
+            },
+          }
+        : {
+            fileData: {
+              mimeType,
+              fileUri,
+            },
+          };
+      if (videoMetadata) {
+        videoPart.videoMetadata = videoMetadata;
+      }
+
+      // ultra_high media resolution must live on the media Part itself
+      const videoPartResolution = this.getPartMediaResolution(
+        'video',
+        options
+      );
+      if (videoPartResolution) {
+        videoPart.mediaResolution = videoPartResolution;
+      }
+
+      const { result: response, duration: analysisDuration } =
+        await this.measureAsync(async () => {
+          return await this.client.models.generateContent({
+            model,
+            contents: [
+              {
+                role: 'user',
+                parts: [videoPart, { text: prompt }],
+              },
+            ],
+            config: this.buildConfigWithOptions(
+              'video',
+              options?.functionName,
+              options
+            ),
+          });
+        });
+
+      const text = response.text || '';
+      const usage = response.usageMetadata;
+
+      return this.createAnalysisResult(
+        text,
+        model,
+        usage &&
+          usage.promptTokenCount &&
+          usage.candidatesTokenCount &&
+          usage.totalTokenCount
+          ? {
+              promptTokenCount: usage.promptTokenCount,
+              candidatesTokenCount: usage.candidatesTokenCount,
+              totalTokenCount: usage.totalTokenCount,
+            }
+          : undefined,
+        uploadDuration + analysisDuration,
+        mimeType,
+        undefined, // fileSize not available for video
+        response.modelVersion,
+        response.responseId
+      );
+    } catch (error) {
+      throw this.handleError(error, 'video analysis');
+    }
+  }
+
+  async uploadFile(): Promise<UploadedFile> {
+    // Vertex AI requires external storage for all files
+    // This method should integrate with a storage service
+    throw new FileUploadError(
+      'Vertex AI requires external storage. Please upload files to GCS first.',
+      'vertex_ai'
+    );
+  }
+
+  async downloadFile(): Promise<Buffer> {
+    // For Vertex AI, files are stored in GCS
+    // This would need to integrate with GCS client
+    throw new Error(
+      'File download not directly supported by Vertex AI provider. Use GCS client instead.'
+    );
+  }
+
+  async deleteFile(): Promise<void> {
+    // For Vertex AI, files are stored in GCS
+    // This would need to integrate with GCS client
+    throw new Error(
+      'File deletion not directly supported by Vertex AI provider. Use GCS client instead.'
+    );
+  }
+
+  getSupportedFormats(): ProviderCapabilities {
+    return {
+      ...this.getProviderCapabilities(),
+      supportedImageFormats: [
+        'png',
+        'jpg',
+        'jpeg',
+        'webp',
+        'gif',
+        'bmp',
+        'tiff',
+        'heic',
+        'heif',
+      ],
+      supportedVideoFormats: [
+        'mp4',
+        'mov',
+        'avi',
+        'mkv',
+        'webm',
+        'flv',
+        'wmv',
+        '3gp',
+        'm4v',
+      ],
+      maxImageSize: 20 * 1024 * 1024, // 20MB
+      maxVideoSize: 2 * 1024 * 1024 * 1024, // 2GB
+      maxVideoDuration: 3600, // 1 hour
+      supportsVideo: true,
+      supportsFileUpload: false, // Requires external storage
+    };
+  }
+
+  getModelCapabilities(): ModelCapabilities {
+    return {
+      ...this.getBaseModelCapabilities(),
+      imageAnalysis: true,
+      videoAnalysis: true,
+      maxTokensForImage: 500, // Default from config
+      maxTokensForVideo: 2000, // Default from config
+      supportedFormats: this.getSupportedFormats().supportedImageFormats.concat(
+        this.getSupportedFormats().supportedVideoFormats
+      ),
+    };
+  }
+
+  getProviderInfo(): ProviderInfo {
+    return {
+      name: 'Google Vertex AI',
+      version: '2.0',
+      description:
+        'Google Vertex AI Gemini multimodal models for enterprise image and video analysis',
+      capabilities: this.getSupportedFormats(),
+      modelCapabilities: this.getModelCapabilities(),
+    };
+  }
+
+  async healthCheck(): Promise<HealthStatus> {
+    try {
+      const { duration } = await this.measureAsync(async () => {
+        // Simple test with minimal content
+        await this.client.models.generateContent({
+          model: this.resolveModelForFunction(
+            'image',
+            FUNCTION_NAMES.ANALYZE_IMAGE
+          ),
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: 'Hello' }],
+            },
+          ],
+        });
+      });
+
+      return this.createHealthStatus('healthy', duration);
+    } catch (error) {
+      return this.createHealthStatus(
+        'unhealthy',
+        undefined,
+        this.getErrorMessage(error)
+      );
+    }
+  }
+
+  // Private helper methods
+
+  private handleError(error: unknown, operation: string): Error {
+    if (error instanceof Error) {
+      if (
+        error.message.includes('network') ||
+        error.message.includes('fetch')
+      ) {
+        return new NetworkError(error.message, error);
+      }
+      if (
+        error.message.includes('rate limit') ||
+        error.message.includes('quota')
+      ) {
+        return new ProviderError(
+          `Rate limit exceeded during ${operation}`,
+          'vertex_ai',
+          error,
+          429
+        );
+      }
+      if (
+        error.message.includes('authentication') ||
+        error.message.includes('unauthorized')
+      ) {
+        return new ProviderError(
+          `Authentication failed during ${operation}: ${error.message}`,
+          'vertex_ai',
+          error,
+          401
+        );
+      }
+      if (
+        error.message.includes('permission') ||
+        error.message.includes('forbidden')
+      ) {
+        return new ProviderError(
+          `Authorization failed during ${operation}: ${error.message}`,
+          'vertex_ai',
+          error,
+          403
+        );
+      }
+      return new ProviderError(
+        `Failed during ${operation}: ${error.message}`,
+        'vertex_ai',
+        error
+      );
+    }
+
+    return new ProviderError(
+      `Unknown error during ${operation}`,
+      'vertex_ai',
+      error as Error
+    );
+  }
+
+  private getErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return String(error);
+  }
+
+  private validateEndpoint(endpoint: string): void {
+    // Validate that it's a valid URL format
+    try {
+      new URL(endpoint);
+    } catch (error) {
+      throw new ProviderError(
+        `Invalid Vertex AI endpoint format: ${endpoint}. Must be a valid URL.`,
+        'vertex_ai',
+        undefined,
+        400
+      );
+    }
+  }
+
+  private logDebugInfo(): void {
+    const imageModelUrl = `${this.config.endpoint}/v1/projects/${this.config.projectId}/locations/${this.config.location}/publishers/google/models/${this.imageModel}:generateContent`;
+    const videoModelUrl = `${this.config.endpoint}/v1/projects/${this.config.projectId}/locations/${this.config.location}/publishers/google/models/${this.videoModel}:generateContent`;
+
+    console.error(`[VertexAI Provider] Configuration:`);
+    console.error(`  - Project ID: ${this.config.projectId}`);
+    console.error(`  - Location: ${this.config.location}`);
+    console.error(`  - Endpoint: ${this.config.endpoint}`);
+    console.error(
+      `  - Authentication: ${this.config.clientEmail && this.config.privateKey ? 'Service Account' : 'Application Default Credentials'}`
+    );
+    console.error(`  - Image Model URL: ${imageModelUrl}`);
+    console.error(`  - Video Model URL: ${videoModelUrl}`);
+  }
+
+  /**
+   * Build video metadata for the API request
+   * Converts startOffset, endOffset, fps to API format
+   */
+  private buildVideoMetadata(videoMetadata?: {
+    startOffset?: string | number;
+    endOffset?: string | number;
+    fps?: number;
+  }): { startOffset?: string; endOffset?: string; fps?: number } | undefined {
+    if (!videoMetadata) {
+      return undefined;
+    }
+
+    const result: { startOffset?: string; endOffset?: string; fps?: number } = {};
+
+    if (videoMetadata.startOffset !== undefined) {
+      const formatted = formatDuration(videoMetadata.startOffset);
+      if (formatted) {
+        result.startOffset = formatted;
+      }
+    }
+
+    if (videoMetadata.endOffset !== undefined) {
+      const formatted = formatDuration(videoMetadata.endOffset);
+      if (formatted) {
+        result.endOffset = formatted;
+      }
+    }
+
+    if (videoMetadata.fps !== undefined) {
+      result.fps = videoMetadata.fps;
+    }
+
+    // Return undefined if no valid metadata was provided
+    if (Object.keys(result).length === 0) {
+      return undefined;
+    }
+
+    return result;
+  }
+}

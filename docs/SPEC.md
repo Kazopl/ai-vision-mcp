@@ -1,0 +1,1051 @@
+# Vision MCP Server - Development Specification
+
+## 1. Overview
+
+Vision MCP server that provides AI-powered image and video analysis using Google Gemini with Google Cloud storage integration.
+
+### 1.1 Current Implementation
+
+- **Providers**: Google Gemini and Vertex AI with `@google/genai` SDK
+- **Storage**: Google Cloud Storage integration (required for Vertex AI, optional for Gemini)
+- **Architecture**: Modular design with factory pattern for provider expansion
+- **Protocol**: Stateless MCP implementation with 4 primary tools
+- **File Processing**: Cross-platform support (Windows/Unix) with intelligent upload strategies
+
+### 1.2 Future Expansion
+
+Architecture supports easy addition of new providers through:
+- Modular naming convention (GEMINI_, OPENAI_, etc.)
+- Provider factory pattern for seamless integration
+
+## 2. Environment Variables Configuration
+
+### 2.1 Environment Variables
+
+For comprehensive environment variable documentation, including:
+
+- **Complete Configuration Reference**: 60+ environment variables with descriptions and defaults
+- **Configuration Priority System**: 4-level hierarchy for AI parameters and 3-level for model selection
+- **Quick Setup Examples**: Basic, production, and function-specific configurations
+- **Advanced Optimization**: Performance tuning and cost optimization strategies
+- **Troubleshooting Guide**: Common issues and solutions
+
+👉 **[See Environment Variable Guide](environment-variable-guide.md)**
+
+### 2.2 Quick Setup Reference
+
+For basic configuration, see the essential variables below:
+
+**Required Configuration:**
+```bash
+# Provider selection
+IMAGE_PROVIDER=google|vertex_ai
+VIDEO_PROVIDER=google|vertex_ai
+
+# Google AI Studio (if using google provider)
+GEMINI_API_KEY=your_gemini_api_key
+
+# Vertex AI (if using vertex_ai provider)
+VERTEX_CLIENT_EMAIL=your-service-account@project.iam.gserviceaccount.com
+VERTEX_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+VERTEX_PROJECT_ID=your-project-id
+GCS_BUCKET_NAME=your-vision-files-bucket
+```
+
+**Key Optional Variables:**
+```bash
+# AI parameters (hierarchical configuration)
+TEMPERATURE=0.8
+MAX_TOKENS=1000
+
+# Task-specific overrides
+TEMPERATURE_FOR_IMAGE=0.2
+TEMPERATURE_FOR_VIDEO=0.5
+
+# Function-specific overrides
+TEMPERATURE_FOR_ANALYZE_IMAGE=0.1
+TEMPERATURE_FOR_DETECT_OBJECTS_IN_IMAGE=0.0
+
+# Model selection
+IMAGE_MODEL=gemini-2.5-flash-lite
+VIDEO_MODEL=gemini-2.5-flash
+```
+
+### 2.3 Parameter Priority Resolution
+
+The AI model parameters follow a hierarchical priority system where more specific settings override general ones:
+
+#### Priority Order (Highest to Lowest)
+
+1. **LLM-assigned values** - Parameters passed directly in tool calls
+   ```json
+   {
+     "imageSource": "...",
+     "prompt": "...",
+     "options": {
+       "temperature": 0.1,
+       "maxTokens": 600
+     }
+   }
+   ```
+
+2. **Task-specific variables** - `TEMPERATURE_FOR_IMAGE`, `MAX_TOKENS_FOR_VIDEO`, etc.
+3. **Universal variables** - `TEMPERATURE`, `MAX_TOKENS`, etc.
+4. **System defaults** - Built-in fallback values
+
+#### Example Configuration
+
+```bash
+# Universal configuration for all tasks
+TEMPERATURE=0.3
+MAX_TOKENS=600
+
+# Task-specific overrides
+TEMPERATURE_FOR_IMAGE=0.1  # More precise for image analysis
+MAX_TOKENS_FOR_VIDEO=1200   # Longer responses for video content
+
+# LLM can override at runtime via tool parameters
+```
+
+This hierarchy allows for sensible defaults while maintaining granular control per task type.
+
+## 3. System Architecture
+
+### 3.0 MCP logging (stdio-safe)
+
+This server enables the MCP **logging** capability and emits logs via `notifications/message`.
+
+Key rules:
+- **stdout must contain only MCP JSON-RPC** (stdio transport framing depends on it)
+- operational logs should be sent as MCP logging notifications when connected
+- for pre-connect/fatal events, logs fall back to **stderr**
+
+Implementation:
+- `src/services/LoggerService.ts` wraps MCP logging (`server.server.sendLoggingMessage`) with stderr fallback.
+- `src/server.ts` enables `capabilities: { logging: {} }` and attaches the logger.
+
+### 3.0.1 Image annotation stack
+
+`detect_objects_in_image` produces an annotated image.
+
+- `src/utils/imageAnnotator.ts` uses **ImageScript** to decode images, draw bounding box outlines, render text labels, and encode PNG output.
+- Labels require a font. The annotator tries:
+  1) `ANNOTATION_FONT_PATH` (if set)
+  2) a bundled font path (see implementation)
+  3) common system font locations
+
+If no font is available, the tool degrades to **boxes-only** and emits a warning log.
+
+
+### 3.1 Component Overview
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Vision MCP Server                   │
+├─────────────────────────────────────────────────────────┤
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────┐  │
+│  │   MCP Functions     │  │  MCP Resources  │  │ MCP    │  │
+│  │                 │  │                 │  │ Prompts │  │
+│  │ • analyze_image │  │ • file_storage  │  │         │  │
+│  │ • compare_images │  │ • provider_info │  │ • vision│  │
+│  │ • analyze_video │  │ • model_info    │  │ • code  │  │
+│  │                 │  │                 │  │         │  │
+│  └─────────────────┘  └─────────────────┘  └─────────┘  │
+├─────────────────────────────────────────────────────────┤
+│                 Provider Factory Layer                 │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────┐  │
+│  │   Image Provider│  │  Video Provider │  │ Storage  │  │
+│  │                 │  │                 │  │ Provider │  │
+│  │ • Gemini        │  │ • Gemini        │  │         │  │
+│  └─────────────────┘  └─────────────────┘  │ • Google Cloud    │  │
+│                                         └─────────┘  │
+├─────────────────────────────────────────────────────────┤
+│                    Core Services                       │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌─────────┐  │
+│  │   File Service   │  │  Config Service  │  │ Logger  │  │
+│  │                  │  │                  │  │ Service │  │
+│  │ • Cloud Upload   │  │ • Env Variables  │  │         │  │
+│  │ • URL Handling   │  │ • Provider Config│  │ • Struct│  │
+│  │ • Validation     │  │ • Feature Flags  │  │ • Multi │  │
+│  └──────────────────┘  └──────────────────┘  └─────────┘  │
+├─────────────────────────────────────────────────────────┤
+│                 Infrastructure Layer                    │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────┐  │
+│  │   HTTP Client   │  │   Error Handler │  │ Rate    │  │
+│  │                 │  │                 │  │ Limiting│  │
+│  │ • Retry Logic   │  │ • Error Types   │  │         │  │
+│  │                 │  │ • Context       │  │ • Per   │  │
+│  │                 │  │ • Recovery      │  │ Provider│  │
+│  └─────────────────┘  └─────────────────┘  └─────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 3.2 Provider Interface
+
+```typescript
+// Core provider interface
+interface VisionProvider {
+  // Core capabilities
+  analyzeImage(imageSource: string, prompt: string, options?: AnalysisOptions): Promise<AnalysisResult>;
+  analyzeVideo(videoSource: string, prompt: string, options?: AnalysisOptions): Promise<AnalysisResult>;
+  compareImages(imageSources: string[], prompt: string, options?: AnalysisOptions): Promise<AnalysisResult>;
+
+  // File operations
+  uploadFile(buffer: Buffer, filename: string, mimeType: string): Promise<UploadedFile>;
+  downloadFile(fileId: string): Promise<Buffer>;
+  deleteFile(fileId: string): Promise<void>;
+
+  // Model configuration
+  setModel(imageModel: string, videoModel: string): void;
+  getImageModel(): string;
+  getVideoModel(): string;
+
+  // Provider information
+  getSupportedFormats(): ProviderCapabilities;
+  getModelCapabilities(): ModelCapabilities;
+  getProviderInfo(): ProviderInfo;
+
+  // Health and status
+  healthCheck(): Promise<HealthStatus>;
+  getRateLimitInfo(): RateLimitInfo;
+  supportsVideo(): boolean;
+}
+```
+
+### 3.3 Architecture Decision: Tool-Level vs Provider-Level Methods
+
+#### Why `detect_objects_in_image` Uses `analyzeImage()` Instead of Having Its Own Provider Method
+
+The `detect_objects_in_image` MCP tool is implemented at the **tool layer** and uses the existing `analyzeImage()` provider method rather than having a dedicated `detectObjectsInImage()` method in the provider. This is an intentional architectural decision based on the following principles:
+
+**1. Separation of Concerns**
+
+The architecture follows a clear **layered design**:
+
+- **Provider Layer** (`GeminiProvider`, `VertexAIProvider`):
+  - Provides **primitive operations** for AI vision tasks
+  - Handles low-level API communication, authentication, and error handling
+  - Agnostic to domain-specific use cases
+
+- **Tool Layer** (`detect_objects_in_image.ts`, `analyze_image.ts`, etc.):
+  - Composes provider primitives with **domain-specific logic**
+  - Adds specialized workflows (annotation, file handling, coordinate conversion)
+  - Handles MCP-specific response formatting
+
+**2. Functional Equivalence at Provider Level**
+
+Object detection is fundamentally **single-image analysis** with specific configuration:
+- System instruction for format requirements (`DETECTION_SYSTEM_INSTRUCTION`)
+- Response schema for structured JSON output (bounding boxes)
+- User prompt for detection query
+
+The provider doesn't need to know it's doing "object detection" vs "general analysis" - it simply sends image + prompt + config to the AI model.
+
+**3. DRY Principle (Don't Repeat Yourself)**
+
+Adding `detectObjectsInImage()` to the provider would:
+- Duplicate 90% of `analyzeImage()` code
+- Add minimal value (only difference is passing `responseSchema` and `systemInstruction` in options)
+- Create maintenance burden - any changes to image analysis would need updating in multiple places
+
+**4. Tool-Specific Logic Belongs in Tool Layer**
+
+The `detect_objects_in_image` tool includes specialized logic that doesn't belong in the provider:
+
+```typescript
+// Tool layer responsibilities (src/tools/detect_objects_in_image.ts):
+- Parse and validate JSON detection results with robust error handling
+- Convert normalized coordinates (0-1000) to pixel coordinates
+- Draw bounding box annotations using ImageScript library
+- Handle 2-step file output logic:
+  * Explicit outputFilePath → save to exact path
+  * If not explicit outputFilePath → auto-save to temp or skip on permission error
+- Generate CSS selector suggestions for detected web elements
+- Create hybrid summary with coordinates and automation guidance
+
+```
+
+**5. Extensibility Through Composition**
+
+The current design allows **any tool** to use structured output without adding provider methods:
+
+```typescript
+// Flexible approach - any tool can use structured output
+await provider.analyzeImage(source, prompt, {
+  responseSchema: customSchema,
+  systemInstruction: customInstruction,
+  temperature: 0,
+});
+```
+
+If detection was a separate method, we'd need separate provider methods for every specialized use case (facial recognition, OCR, scene segmentation, etc.).
+
+**6. Provider Interface Consistency**
+
+The `VisionProvider` interface defines methods based on **input modality**, not **output format**:
+- `analyzeImage()` - takes **1 image** → returns text analysis
+- `compareImages()` - takes **N images** → returns comparative analysis
+- `analyzeVideo()` - takes **1 video** → returns temporal analysis
+
+Object detection takes **1 image** (same input as `analyzeImage()`), so it naturally uses that method. The difference is only in **options** (schema, system instruction) which are already parameterized.
+
+**Comparison: Why `compareImages()` Has Its Own Method**
+
+`compareImages()` is justified as a separate provider method because it has **structurally different requirements**:
+- Takes **multiple image sources** (different input cardinality)
+- Requires **batch processing** - loop through images, upload each
+- Assembles **different content format** - array of images + prompt
+- Provider-level distinction based on **input type**, not output format
+
+**Implementation Reference**
+
+```typescript
+// src/tools/detect_objects_in_image.ts (lines 210-214)
+const result = await imageProvider.analyzeImage(
+  processedImageSource,
+  detectionPrompt,
+  options  // includes responseSchema and systemInstruction
+);
+
+// Options configuration (lines 188-200)
+const options: AnalysisOptions = {
+  temperature: config.TEMPERATURE_FOR_DETECT_OBJECTS_IN_IMAGE ?? config.TEMPERATURE_FOR_IMAGE ?? config.TEMPERATURE,
+  topP: config.TOP_P_FOR_DETECT_OBJECTS_IN_IMAGE ?? config.TOP_P_FOR_IMAGE ?? config.TOP_P,
+  topK: config.TOP_K_FOR_DETECT_OBJECTS_IN_IMAGE ?? config.TOP_K_FOR_IMAGE ?? config.TOP_K,
+  maxTokens: config.MAX_TOKENS_FOR_DETECT_OBJECTS_IN_IMAGE ?? config.MAX_TOKENS_FOR_IMAGE ?? config.MAX_TOKENS,
+  taskType: 'image',
+  functionName: FUNCTION_NAMES.DETECT_OBJECTS_IN_IMAGE,
+  responseSchema: createDetectionSchema(config.IMAGE_PROVIDER),  // Structured output
+  systemInstruction: DETECTION_SYSTEM_INSTRUCTION,                // Format requirements
+  ...args.options,  // User options override defaults
+};
+```
+
+**Benefits of This Architecture**
+
+1. **Reusability**: `analyzeImage()` serves multiple use cases
+2. **Flexibility**: Options-based configuration allows any structured output schema
+3. **Maintainability**: No code duplication, single source of truth
+4. **Separation**: Tool layer handles domain logic, provider handles API communication
+5. **Extensibility**: New tools can leverage existing provider primitives
+
+This design follows SOLID principles and maintains clean separation between infrastructure (provider) and business logic (tools).
+
+### 3.5 Structured Output Support
+
+Both Gemini and Vertex AI providers support structured JSON output via the `responseSchema` and `systemInstruction` configuration options. This enables advanced features like object detection with bounding box coordinates.
+
+**Implementation Details:**
+
+The `buildConfigWithOptions()` helper method in `BaseVisionProvider` (src/providers/base/VisionProvider.ts:354-395) automatically handles structured output configuration:
+
+```typescript
+protected buildConfigWithOptions(
+  taskType: TaskType,
+  functionName: FunctionName | undefined,
+  options?: AnalysisOptions
+): any {
+  const config: any = {
+    temperature: this.resolveTemperatureForFunction(...),
+    topP: this.resolveTopPForFunction(...),
+    topK: this.resolveTopKForFunction(...),
+    maxOutputTokens: this.resolveMaxTokensForFunction(...),
+    candidateCount: 1,
+  };
+
+  // Add structured output configuration if responseSchema is provided
+  if (options?.responseSchema) {
+    config.responseMimeType = 'application/json';
+    config.responseSchema = options.responseSchema;
+  }
+
+  // Add system instruction if provided
+  if (options?.systemInstruction) {
+    config.systemInstruction = options.systemInstruction;
+  }
+
+  return config;
+}
+```
+
+**Provider Support:**
+
+| Provider | Structured Output | System Instructions | SDK Version |
+|----------|------------------|---------------------|-------------|
+| **Gemini** | ✅ Native support | ✅ Native support | `@google/genai` v1.0.0+ |
+| **Vertex AI** | ✅ Native support | ✅ Native support | `@google/genai` v1.0.0+ |
+
+Both providers use the same `@google/genai` SDK, which provides unified support for structured outputs across Gemini and Vertex AI backends.
+
+**Usage Pattern:**
+
+```typescript
+// Tools pass responseSchema and systemInstruction via AnalysisOptions
+const options: AnalysisOptions = {
+  temperature: 0,
+  maxTokens: 8192,
+  responseSchema: {
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        object: { type: 'string' },
+        label: { type: 'string' },
+        normalized_box_2d: { type: 'array', items: { type: 'integer' } }
+      }
+    }
+  },
+  systemInstruction: 'Detect all objects and return as JSON...'
+};
+
+// Provider automatically includes these in API call
+await provider.analyzeImage(imageSource, prompt, options);
+```
+
+**Benefits:**
+
+1. **DRY Principle**: Single implementation in BaseVisionProvider serves all providers
+2. **Consistency**: Same configuration format across Gemini and Vertex AI
+3. **Extensibility**: Easy to add new providers with structured output support
+4. **Type Safety**: TypeScript ensures correct schema structure
+
+### 3.6 Provider Factory
+
+```typescript
+export class VisionProviderFactory {
+  private static providers = new Map<string, () => VisionProvider>();
+
+  /**
+   * Register a new provider with the factory
+   */
+  static registerProvider(name: string, factory: () => VisionProvider): void {
+    this.providers.set(name, factory);
+  }
+
+  /**
+   * Create provider with configuration validation
+   */
+  static createProviderWithValidation(
+    config: Config,
+    type: 'image' | 'video'
+  ): VisionProvider {
+    const providerName = (config as any)[`${type.toUpperCase()}_PROVIDER`] || 'google';
+
+    // Validate configuration before creating provider
+    this.validateProviderConfig(config, providerName);
+
+    // Create the provider through factory
+    const factory = this.providers.get(providerName);
+    if (!factory) {
+      throw new ConfigurationError(`Unsupported provider: ${providerName}`);
+    }
+
+    try {
+      const provider = factory();
+
+      // Set default models if not configured
+      const defaultModels = this.getDefaultModels(providerName);
+      provider.setModel(
+        config.IMAGE_MODEL || defaultModels.image,
+        config.VIDEO_MODEL || defaultModels.video
+      );
+
+      return provider;
+    } catch (error) {
+      throw new ProviderError(
+        `Failed to create ${providerName} provider: ${error instanceof Error ? error.message : String(error)}`,
+        providerName,
+        error instanceof Error ? error : new Error(String(error))
+      );
+    }
+  }
+
+  /**
+   * Validate provider configuration
+   */
+  static validateProviderConfig(config: Config, providerName: string): void {
+    const requirements = this.getProviderConfigRequirements(providerName);
+    const missing = requirements.filter(req => {
+      const value = config[req as keyof Config];
+      return !value || (typeof value === 'string' && value.trim() === '');
+    });
+
+    if (missing.length > 0) {
+      throw new ConfigurationError(
+        `Missing required configuration for ${providerName}: ${missing.join(', ')}`
+      );
+    }
+  }
+```
+
+### 3.5 Storage Provider
+
+```typescript
+// Storage provider interface
+interface StorageProvider {
+  uploadFile(buffer: Buffer, filename: string, mimeType: string): Promise<StorageFile>;
+  downloadFile(fileId: string): Promise<Buffer>;
+  deleteFile(fileId: string): Promise<void>;
+  getPublicUrl(fileId: string): Promise<string>;
+  getSignedUrl(fileId: string, expiresIn: number): Promise<string>;
+  listFiles(prefix?: string): Promise<StorageFile[]>;
+}
+
+// Google Cloud Storage implementation using native SDK
+class GCSStorageProvider implements StorageProvider {
+  private storage: Storage;
+  private bucket: Bucket;
+  private config: GCSConfig;
+
+  constructor(config: {
+    bucketName: string;
+    projectId: string;
+    credentials: string;
+    region?: string;
+  }) {
+    this.config = config;
+
+    // Initialize native GCS Storage client
+    this.storage = new Storage({
+      projectId: config.projectId,
+      keyFilename: config.credentials,
+    });
+
+    this.bucket = this.storage.bucket(config.bucketName);
+  }
+
+  async uploadFile(buffer: Buffer, filename: string, mimeType: string): Promise<StorageFile> {
+    const file = this.bucket.file(filename);
+
+    await file.save(buffer, {
+      contentType: mimeType,
+      metadata: {
+        cacheControl: 'public, max-age=31536000',
+      },
+    });
+
+    const [metadata] = await file.getMetadata();
+
+    return {
+      id: filename,
+      filename,
+      mimeType,
+      size: buffer.length,
+      url: `gs://${this.config.bucketName}/${filename}`,
+      lastModified: metadata.updated || new Date().toISOString(),
+      etag: metadata.etag,
+    };
+  }
+
+  async getPublicUrl(fileId: string): Promise<string> {
+    // Return GCS URI format (gs://bucket/path)
+    return `gs://${this.config.bucketName}/${fileId}`;
+  }
+}
+```
+
+### 3.7 File Upload Strategies
+
+```typescript
+// File upload strategy interface
+interface FileUploadStrategy {
+  uploadFile(buffer: Buffer, filename: string, mimeType: string): Promise<UploadedFile>;
+  getFileForAnalysis(uploadedFile: UploadedFile): Promise<FileReference>;
+  cleanup?(fileId: string): Promise<void>;
+}
+
+// Gemini API Files Strategy
+class GeminiFilesAPI implements FileUploadStrategy {
+  constructor(private config: GeminiConfig) {}
+
+  async uploadFile(buffer: Buffer, filename: string, mimeType: string): Promise<UploadedFile> {
+    // Upload to Gemini Files API
+    const formData = new FormData();
+    formData.append('file', new Blob([buffer], { type: mimeType }), filename);
+
+    const response = await fetch(`${this.config.baseUrl}/upload/v1beta/files`, {
+      method: 'POST',
+      headers: {
+        'X-Goog-Api-Key': this.config.apiKey,
+      },
+      body: formData,
+    });
+
+    return await response.json();
+  }
+
+  async getFileForAnalysis(uploadedFile: UploadedFile): Promise<FileReference> {
+    return {
+      type: 'file_uri',
+      uri: uploadedFile.uri,
+      mimeType: uploadedFile.mimeType
+    };
+  }
+}
+
+// Vertex AI Storage Strategy
+class VertexAIStorageStrategy implements FileUploadStrategy {
+  constructor(private storageProvider: StorageProvider) {}
+
+  async uploadFile(buffer: Buffer, filename: string, mimeType: string): Promise<UploadedFile> {
+    // Upload to Google Cloud Storage using native SDK
+    return await this.storageProvider.uploadFile(buffer, filename, mimeType);
+  }
+
+  async getFileForAnalysis(uploadedFile: UploadedFile): Promise<FileReference> {
+    // For Vertex AI with native GCS, the URL is already in gs:// format
+    const gcsUri = await this.storageProvider.getPublicUrl(uploadedFile.id);
+    return {
+      type: 'file_uri',
+      uri: gcsUri,
+      mimeType: uploadedFile.mimeType
+    };
+  }
+}
+
+// File Upload Factory
+class FileUploadFactory {
+  static createStrategy(config: Config, type: 'image' | 'video'): FileUploadStrategy {
+    const providerName = config[`${type.toUpperCase()}_PROVIDER`] || 'google';
+
+    switch (providerName) {
+      case 'google':
+        return new GeminiFilesAPI(config);
+      case 'vertex_ai':
+        const storageProvider = StorageFactory.createProvider(config);
+        return new VertexAIStorageStrategy(storageProvider);
+      default:
+        throw new Error(`Unsupported provider for file upload: ${providerName}`);
+    }
+  }
+}
+```
+
+## 4. Implementation Guidelines
+
+### 4.1 Project Structure
+
+```
+src/
+├── providers/
+│   ├── base/
+│   │   └── VisionProvider.ts
+│   ├── gemini/
+│   │   ├── GeminiProvider.ts
+│   │   └── GeminiClient.ts
+│   ├── vertexai/
+│   │   └── VertexAIProvider.ts
+│   └── factory/
+│       └── ProviderFactory.ts
+├── storage/
+│   ├── base/
+│   │   └── StorageProvider.ts
+│   ├── gcs/
+│   │   └── GCSStorage.ts
+│   └── factory/
+│       └── StorageFactory.ts
+├── file-upload/
+│   ├── base/
+│   │   └── FileUploadStrategy.ts
+│   ├── gemini/
+│   │   └── GeminiFilesAPI.ts
+│   ├── vertexai/
+│   │   └── VertexAIStorageStrategy.ts
+│   └── factory/
+│       └── FileUploadFactory.ts
+├── services/
+│   ├── FileService.ts
+│   ├── ConfigService.ts
+│   └── LoggerService.ts
+├── tools/
+│   ├── analyze_image.ts
+│   ├── compare_images.ts
+│   └── analyze_video.ts
+├── types/
+│   ├── Config.ts
+│   ├── Analysis.ts
+│   └── Storage.ts
+├── utils/
+│   ├── validation.ts
+│   ├── errors.ts
+│   └── retry.ts
+└── server.ts
+```
+
+### 4.2 Gemini Provider Implementation
+
+```typescript
+export class GeminiProvider implements VisionProvider {
+  private client: GoogleGenAI;
+  private imageModel: string;
+  private videoModel: string;
+
+  constructor(config: GeminiConfig) {
+    this.client = new GoogleGenAI({ apiKey: config.apiKey });
+    this.imageModel = config.imageModel;
+    this.videoModel = config.videoModel;
+  }
+
+  async analyzeImage(imageSource: string, prompt: string, options?: AnalysisOptions): Promise<AnalysisResult> {
+    await this.client.models.generateContent({
+      model: this.imageModel,
+      contents: [{ text: prompt }],
+    });
+
+    const imageData = await this.fetchImageData(imageSource);
+    const result = await model.generateContent([
+      { inlineData: imageData },
+      { text: prompt }
+    ]);
+
+    return {
+      text: result.response.text(),
+      metadata: {
+        model: this.imageModel,
+        provider: 'gemini',
+        usage: result.response.usageMetadata,
+      }
+    };
+  }
+
+  async analyzeVideo(videoSource: string, prompt: string, options?: AnalysisOptions): Promise<AnalysisResult> {
+    const model = this.client.getGenerativeModel({ model: this.videoModel });
+
+    const videoFile = await this.uploadVideoFile(videoSource);
+    const result = await model.generateContent([
+      { fileData: { mimeType: videoFile.mimeType, fileUri: videoFile.uri } },
+      { text: prompt }
+    ]);
+
+    return {
+      text: result.response.text(),
+      metadata: {
+        model: this.videoModel,
+        provider: 'gemini',
+        usage: result.response.usageMetadata,
+      }
+    };
+  }
+
+  supportsVideo(): boolean {
+    return true;
+  }
+}
+```
+
+### 4.3 Internal File Upload Implementation
+
+```typescript
+// services/FileService.ts - Internal file handling service
+export class FileService {
+  private uploadStrategy: FileUploadStrategy;
+
+  constructor(config: Config, type: 'image' | 'video') {
+    this.uploadStrategy = FileUploadFactory.createStrategy(config, type);
+  }
+
+  async handleImageSource(imageSource: string): Promise<string> {
+    // If it's already a public URL, return as-is
+    if (imageSource.startsWith('http')) {
+      return imageSource;
+    }
+
+    // If it's a local file path, upload to S3 storage
+    const fileBuffer = await fs.readFile(imageSource);
+    const filename = path.basename(imageSource);
+    const mimeType = mime.lookup(imageSource) || 'application/octet-stream';
+
+    const uploadedFile = await this.uploadStrategy.uploadFile(
+      fileBuffer,
+      filename,
+      mimeType
+    );
+
+    // Return provider-specific file reference
+    const fileReference = await this.uploadStrategy.getFileForAnalysis(uploadedFile);
+    return fileReference.type === 'file_uri'
+      ? fileReference.uri
+      : fileReference.url;
+  }
+}
+
+// tools/analyze_image.ts
+export async function analyze_image(args: {
+  imageSource: string; // Can be URL or local file path
+  prompt: string;
+  options?: AnalysisOptions;
+}): Promise<AnalysisResult> {
+  const config = ConfigService.load();
+
+  // Create provider
+  const provider = ProviderFactory.createProvider(config, 'image');
+
+  // Create file service for handling image source
+  const fileService = new FileService(config, 'image');
+
+  // Handle image source (URL vs local file)
+  const processedImageSource = await fileService.handleImageSource(args.imageSource);
+
+  return await provider.analyzeImage(processedImageSource, args.prompt, args.options);
+}
+
+// tools/analyze_video.ts
+export async function analyze_video(args: {
+  videoSource: string; // Can be URL or local file path
+  prompt: string;
+  options?: AnalysisOptions;
+}): Promise<AnalysisResult> {
+  const config = ConfigService.load();
+
+  // Create provider
+  const provider = ProviderFactory.createProvider(config, 'video');
+
+  // Create file service for handling video source
+  const fileService = new FileService(config, 'video');
+
+  // Handle video source (URL vs local file)
+  const processedVideoSource = await fileService.handleImageSource(args.videoSource);
+
+  return await provider.analyzeVideo(processedVideoSource, args.prompt, args.options);
+}
+```
+
+### 4.4 Error Handling
+
+```typescript
+export class VisionError extends Error {
+  constructor(
+    message: string,
+    public code: string,
+    public provider?: string,
+    public originalError?: Error
+  ) {
+    super(message);
+    this.name = 'VisionError';
+  }
+}
+
+export class ConfigurationError extends VisionError {
+  constructor(message: string, variable?: string) {
+    super(message, 'CONFIG_ERROR', undefined, undefined);
+    this.name = 'ConfigurationError';
+  }
+}
+
+export class ProviderError extends VisionError {
+  constructor(message: string, provider: string, originalError?: Error) {
+    super(message, 'PROVIDER_ERROR', provider, originalError);
+    this.name = 'ProviderError';
+  }
+}
+```
+
+### 4.4 Retry Logic
+
+```typescript
+export class RetryHandler {
+  static async withRetry<T>(
+    operation: () => Promise<T>,
+    maxRetries: number = 3,
+    baseDelay: number = 1000
+  ): Promise<T> {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (attempt === maxRetries || !this.isRetryableError(error)) {
+          throw error;
+        }
+
+        const delay = baseDelay * Math.pow(2, attempt);
+        await this.sleep(delay);
+      }
+    }
+    throw new Error('Max retries exceeded');
+  }
+
+  private static isRetryableError(error: any): boolean {
+    if (error.code === 'RATE_LIMIT_EXCEEDED') return true;
+    if (error.code === 'NETWORK_ERROR') return true;
+    if (error.status >= 500 && error.status < 600) return true;
+    return false;
+  }
+
+  private static sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+```
+
+## 5. Google Cloud Storage Setup
+
+### 5.1 Native Google Cloud Storage (for Vertex AI)
+
+Vertex AI uses native Google Cloud Storage SDK with simplified credentials:
+
+```bash
+# Required configuration
+VERTEX_CLIENT_EMAIL=your-service-account@project.iam.gserviceaccount.com
+VERTEX_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+VERTEX_PROJECT_ID=your-project-id
+GCS_BUCKET_NAME=your-gcs-bucket
+
+# Optional
+VERTEX_LOCATION=us-central1  # defaults to us-central1
+```
+
+**Key Benefits:**
+- Simple environment variables (no JSON file parsing)
+- Same credentials for both Vertex AI and GCS
+- Native GCS SDK for better performance
+- Direct `gs://` URI support for Vertex AI
+
+### 5.2 Service Account Setup
+
+1. Create a service account in Google Cloud Console
+2. Grant the following roles:
+   - `Vertex AI User` - for Vertex AI API access
+   - `Storage Object Admin` - for GCS bucket access
+3. Download the JSON key file
+4. Extract and set these environment variables:
+   - `VERTEX_CLIENT_EMAIL` - from `client_email` field
+   - `VERTEX_PRIVATE_KEY` - from `private_key` field
+   - `VERTEX_PROJECT_ID` - from `project_id` field
+
+## 6. Provider Configuration Examples
+
+### 6.1 Gemini API (AI Studio) - Development Setup
+
+```bash
+# Provider selection
+IMAGE_PROVIDER=google
+VIDEO_PROVIDER=google
+
+# Gemini API configuration
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_BASE_URL=https://generativelanguage.googleapis.com
+```
+
+### 6.2 Vertex AI - Production Setup
+
+```bash
+# Provider selection
+IMAGE_PROVIDER=vertex_ai
+VIDEO_PROVIDER=vertex_ai
+
+# Vertex AI configuration (simplified credentials)
+VERTEX_CLIENT_EMAIL=your-service-account@project.iam.gserviceaccount.com
+VERTEX_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+VERTEX_PROJECT_ID=your-project-id
+VERTEX_LOCATION=us-central1
+
+# Required: Google Cloud Storage bucket
+GCS_BUCKET_NAME=your-vertex-files
+```
+
+### 6.3 Mixed Setup - Development with Vertex AI for Production
+
+```bash
+# Use Gemini API for development (simpler)
+IMAGE_PROVIDER=google
+# Use Vertex AI for production (enterprise features)
+VIDEO_PROVIDER=vertex_ai
+
+# Both providers configured
+GEMINI_API_KEY=your_gemini_api_key
+VERTEX_CLIENT_EMAIL=your-service-account@project.iam.gserviceaccount.com
+VERTEX_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+VERTEX_PROJECT_ID=your-project-id
+VERTEX_LOCATION=us-central1
+
+# Google Cloud Storage for Vertex AI video processing
+GCS_BUCKET_NAME=your-mixed-provider-files
+```
+
+## 7. Security Considerations
+
+### 7.1 API Key Management
+
+- Load API keys from secure environment variables
+- Validate API keys on startup
+- Support for API key rotation without restart
+- Log all API usage for security auditing
+
+### 7.2 File Security
+
+- Comprehensive file type and size validation
+- Configurable file access restrictions
+- Support for encrypted storage at rest
+- Optional malware scanning integration
+
+### 6.3 Network Security
+
+- All API communications over HTTPS
+- Proper SSL/TLS certificate validation
+- Request retry limits
+- Configurable IP whitelisting
+
+## 8. Performance Optimization
+
+### 8.1 Concurrent Request Management
+
+- Limit concurrent requests per provider
+- Queue file uploads to prevent rate limit exceeded
+- Dynamic resource allocation based on load
+- Request pooling and connection reuse
+
+
+Users should check their actual rate limits in:
+- **Gemini API**: [Google AI Studio](https://ai.google.dev/gemini-api/docs/rate-limits)
+- **Vertex AI**: Google Cloud Console → Quotas & System Limits
+
+The providers will return rate limit errors directly from the API with appropriate retry-after headers when limits are exceeded.
+
+## 9. Testing Guidelines
+
+### 9.1 Unit Tests
+
+- Test provider implementations independently
+- Test configuration loading and validation
+- Test error handling and recovery scenarios
+- Test utility functions and helpers
+
+### 9.2 Integration Tests
+
+- Test integration with Gemini API
+- Test Cloud storage functionality
+- Test end-to-end workflows from upload to analysis
+- Test with actual file formats and sizes
+
+### 9.3 Performance Tests
+
+- Load testing with concurrent requests
+- Stress testing system limits
+- Benchmark analysis performance
+- Memory usage and leak detection
+
+## 10. Development Workflow
+
+### 10.1 Development Setup
+
+1. Install dependencies: `npm install`
+2. Set environment variables in `.env` file
+3. Run development server: `npm run dev`
+
+### 10.2 Code Quality
+
+- Use TypeScript for type safety
+- Follow ESLint configuration
+- Run Prettier for code formatting
+- Use conventional commit messages
+- Add unit tests for new features
+
+### 10.3 Deployment
+
+1. Build TypeScript: `npm run build`
+2. Set production environment variables
+3. Run production server: `npm start`
+4. Configure monitoring and logging
+5. Set up health checks
+
+This specification provides a focused foundation for developing a Gemini-based Vision MCP server with modular architecture for future expansion.

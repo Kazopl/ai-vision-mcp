@@ -1,0 +1,11 @@
+{
+  "name": "design-eval",
+  "displayName": "Design Evaluation Suite",
+  "version": "1.0.0",
+  "description": "Comprehensive design audit, accessibility, and consistency evaluation using ai-vision CLI",
+  "author": {
+    "name": "tan-yong-sheng"
+  },
+  "keywords": ["design", "accessibility", "wcag", "ui-ux", "audit", "design-system"],
+  "license": "Apache-2.0"
+}

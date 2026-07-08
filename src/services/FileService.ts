@@ -1,0 +1,700 @@
+/**
+ * File service for handling image and video sources
+ */
+
+import fs from 'fs/promises';
+import fsSync from 'node:fs';
+import os from 'node:os';
+import path from 'path';
+import { Readable } from 'node:stream';
+import type { FileUploadStrategy } from '../types/Providers.js';
+import { FileUploadFactory } from '../file-upload/factory/FileUploadFactory.js';
+import { GeminiProvider } from '../providers/gemini/GeminiProvider.js';
+import { ConfigService } from './ConfigService.js';
+import { redactUrl, redactError } from '../utils/redact.js';
+import { isYouTubeUrl } from '../utils/youtube.js';
+import {
+  isFileReferenceSource,
+  isGcsUri,
+  isHttpUrl,
+  isRemoteVideoUrl,
+  normalizeMimeType,
+} from '../utils/mediaSources.js';
+import {
+  FileUploadError,
+  UnsupportedFileTypeError,
+  FileSizeExceededError,
+} from '../types/Errors.js';
+
+/**
+ * Native fetch returns a web ReadableStream body; convert it to a Node
+ * Readable so the streaming logic below can use pause/resume/destroy.
+ * Node Readables (e.g. from tests) pass through unchanged.
+ */
+function toNodeReadable(
+  body: unknown
+): (Readable & { destroy?: () => void }) | null {
+  if (!body) return null;
+  if (body instanceof Readable) return body;
+  return Readable.fromWeb(body as Parameters<typeof Readable.fromWeb>[0]);
+}
+
+export class FileService {
+  private static readonly REMOTE_VIDEO_INLINE_THRESHOLD = 50 * 1024 * 1024;
+  private static readonly REMOTE_VIDEO_TIMEOUT_MS = 30000;
+
+  private uploadStrategy: FileUploadStrategy;
+  private configService: ConfigService;
+
+  constructor(
+    configService: ConfigService,
+    type: 'image' | 'video',
+    visionProvider: GeminiProvider
+  ) {
+    this.configService = configService;
+    this.uploadStrategy = FileUploadFactory.createStrategy(
+      configService.getConfig(),
+      type,
+      visionProvider
+    );
+  }
+
+  async handleImageSource(imageSource: string): Promise<string> {
+    if (isFileReferenceSource(imageSource) || isGcsUri(imageSource)) {
+      return imageSource;
+    }
+
+    // Get the image data and size regardless of source
+    const { buffer, mimeType, filename } = await this.getImageData(imageSource);
+
+    // Choose processing method based on size threshold
+    const threshold = this.configService.getGeminiFilesApiThreshold();
+
+    if (buffer.length <= threshold) {
+      // Use inline data for small images
+      return `data:${mimeType};base64,${buffer.toString('base64')}`;
+    } else {
+      // Use Files API for large images
+      return await this.uploadFile(
+        buffer,
+        filename || `image.${this.getFileExtension(mimeType)}`,
+        mimeType
+      );
+    }
+  }
+
+  async handleVideoSource(videoSource: string): Promise<string> {
+    if (isFileReferenceSource(videoSource) || isGcsUri(videoSource)) {
+      return videoSource;
+    }
+
+    if (isHttpUrl(videoSource) && isYouTubeUrl(videoSource)) {
+      return videoSource;
+    }
+
+    if (isRemoteVideoUrl(videoSource)) {
+      return await this.handleRemoteVideoFile(videoSource);
+    }
+
+    // If it's a local file path, check size and decide between inline or Files API
+    if (this.isLocalFilePath(videoSource)) {
+      return await this.handleLocalVideoFile(videoSource);
+    }
+
+    throw new FileUploadError(`Invalid video source format: ${videoSource}`);
+  }
+
+  private async handleLocalVideoFile(filePath: string): Promise<string> {
+    try {
+      const normalizedPath = path.normalize(filePath);
+      await fs.access(normalizedPath);
+      const buffer = await fs.readFile(normalizedPath);
+      const filename = path.basename(normalizedPath);
+      const mimeType = this.getMimeType(filename, buffer);
+
+      // Fail fast if MIME type is unknown
+      if (!mimeType.startsWith('video/')) {
+        throw new FileUploadError(
+          `Cannot process local video: unknown MIME type "${mimeType}". File: ${filename}`
+        );
+      }
+
+      // Inline threshold: default 50MB for safe base64 transport (the Gemini
+      // API accepts inline payloads up to 100MB). GEMINI_FILES_API_THRESHOLD
+      // overrides it, as documented, so users can tune the inline/Files API
+      // cutoff for videos too. Read from process.env because ConfigService
+      // defaults the value to 10MB, which is an image-oriented default.
+      const inlineThreshold = process.env.GEMINI_FILES_API_THRESHOLD
+        ? parseInt(process.env.GEMINI_FILES_API_THRESHOLD, 10)
+        : 50 * 1024 * 1024;
+
+      if (buffer.length <= inlineThreshold) {
+        // Use inline binary data for videos within the threshold
+        return `data:${mimeType};base64,${buffer.toString('base64')}`;
+      } else {
+        // Use Files API for larger videos
+        return await this.uploadFile(buffer, filename, mimeType);
+      }
+    } catch (error) {
+      if (error instanceof FileUploadError) {
+        throw error;
+      }
+      throw new FileUploadError(
+        `Failed to process local video file ${filePath}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  private async handleRemoteVideoFile(videoUrl: string): Promise<string> {
+    const inlineThreshold = FileService.REMOTE_VIDEO_INLINE_THRESHOLD;
+    const timeoutMs = FileService.REMOTE_VIDEO_TIMEOUT_MS;
+    const decodedUrl = videoUrl.replace(/\\&/g, '&');
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    let response: Response | null = null;
+    let responseBody: (Readable & { destroy?: () => void }) | null = null;
+
+    try {
+      response = await fetch(decodedUrl, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+      responseBody = toNodeReadable(response.body);
+
+      if (!response.ok || !responseBody) {
+        responseBody?.destroy?.();
+        return videoUrl;
+      }
+
+
+      const contentLengthHeader = response.headers.get('content-length');
+      const contentLength = contentLengthHeader ? Number(contentLengthHeader) : null;
+      const filename = path.basename(
+        decodedUrl.split('?')[0].split('/').pop() || 'video.mp4'
+      );
+      const contentType = response.headers.get('content-type')?.split(';')[0];
+
+      if (contentLength !== null && Number.isFinite(contentLength)) {
+        if (contentLength >= inlineThreshold) {
+          responseBody.destroy?.();
+          return await this.uploadRemoteVideoStream(
+            decodedUrl,
+            filename,
+            contentType ?? null,
+            videoUrl
+          );
+        }
+      }
+
+      const streamBuffer = await this.readVideoStreamWithLimit(
+        responseBody,
+        inlineThreshold
+      );      if (!streamBuffer) {
+        return await this.uploadRemoteVideoStream(
+          decodedUrl,
+          filename,
+          contentType ?? null,
+          videoUrl
+        );
+      }
+
+      const mimeType =
+        contentType && contentType.startsWith('video/')
+          ? contentType
+          : this.getMimeType(filename, streamBuffer);
+
+      if (!mimeType.startsWith('video/')) {
+        return videoUrl;
+      }
+
+      return `data:${mimeType};base64,${streamBuffer.toString('base64')}`;
+    } catch {
+      return videoUrl;
+    } finally {
+      responseBody?.destroy?.();
+      clearTimeout(timeoutId);
+    }
+  }
+
+  private async readVideoStreamWithLimit(
+    stream: Readable & { destroy?: () => void },
+    limit: number
+  ): Promise<Buffer | null> {
+    const chunks: Buffer[] = [];
+    let totalSize = 0;
+
+    try {
+      for await (const chunk of stream as AsyncIterable<Buffer | string>) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        totalSize += buffer.length;
+
+        if (totalSize > limit) {
+          stream.destroy?.();
+          return null;
+        }
+
+        chunks.push(buffer);
+      }
+
+      return Buffer.concat(chunks);
+    } catch {
+      stream.destroy?.();
+      return null;
+    }
+  }
+
+  private async uploadRemoteVideoStream(
+    videoUrl: string,
+    filename: string,
+    contentType: string | null,
+    fallbackUrl: string
+  ): Promise<string> {
+    const timeoutMs = FileService.REMOTE_VIDEO_TIMEOUT_MS;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-vision-video-'));
+    const tempPath = path.join(tempDir, filename);
+    const writeStream = fsSync.createWriteStream(tempPath);
+
+    try {
+      const response = await fetch(videoUrl, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+
+      const bodyStream = response.ok ? toNodeReadable(response.body) : null;
+      if (!bodyStream) {
+        return fallbackUrl;
+      }
+      await new Promise<void>((resolve, reject) => {
+        bodyStream.on('data', (chunk: Buffer | string) => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          if (!writeStream.write(buffer)) {
+            bodyStream.pause();
+            writeStream.once('drain', () => bodyStream.resume());
+          }
+        });
+
+        bodyStream.on('end', () => {
+          writeStream.end();
+        });
+
+        bodyStream.on('error', reject);
+        writeStream.on('error', reject);
+        writeStream.on('finish', () => resolve());
+      });
+
+      bodyStream.destroy?.();
+
+      const buffer = await fs.readFile(tempPath);
+      const mimeType =
+        contentType && contentType.startsWith('video/')
+          ? contentType
+          : this.getMimeType(filename, buffer);
+
+      if (!mimeType.startsWith('video/')) {
+        return fallbackUrl;
+      }
+
+      return await this.uploadFile(buffer, filename, mimeType);
+    } catch {
+      return fallbackUrl;
+    } finally {
+      clearTimeout(timeoutId);
+      writeStream.destroy();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  async uploadFile(
+    buffer: Buffer,
+    filename: string,
+    mimeType: string
+  ): Promise<string> {
+    // Validate file size
+    const maxSize = this.getMaxFileSize(mimeType);
+    if (buffer.length > maxSize) {
+      throw new FileSizeExceededError(buffer.length, maxSize);
+    }
+
+    // Validate file type
+    if (!this.isSupportedFileType(mimeType)) {
+      throw new UnsupportedFileTypeError(
+        mimeType,
+        this.getSupportedFileTypes()
+      );
+    }
+
+    const uploadedFile = await this.uploadStrategy.uploadFile(
+      buffer,
+      filename,
+      mimeType
+    );
+    const fileReference =
+      await this.uploadStrategy.getFileForAnalysis(uploadedFile);
+
+    return fileReference.type === 'file_uri'
+      ? fileReference.uri || ''
+      : fileReference.url || '';
+  }
+
+  async cleanup(fileId: string): Promise<void> {
+    if (this.uploadStrategy.cleanup) {
+      await this.uploadStrategy.cleanup(fileId);
+    }
+  }
+
+  // Public method to read file directly (used by detect_objects_in_image)
+  async readFile(filePath: string): Promise<Buffer> {
+    const normalizedPath = path.normalize(filePath);
+    await fs.access(normalizedPath);
+    return await fs.readFile(normalizedPath);
+  }
+
+  // Private helper methods
+
+  private async getImageData(imageSource: string): Promise<{
+    buffer: Buffer;
+    mimeType: string;
+    filename?: string;
+  }> {
+    if (imageSource.startsWith('data:image/')) {
+      // Handle base64 data
+      const matches = imageSource.match(
+        /^data:image\/([a-zA-Z]+);base64,(.+)$/
+      );
+      if (!matches) {
+        throw new FileUploadError('Invalid base64 image format');
+      }
+      const mimeType = `image/${matches[1]}`;
+      const buffer = Buffer.from(matches[2], 'base64');
+      return { buffer, mimeType, filename: `image.${matches[1]}` };
+    }
+
+    if (this.isPublicUrl(imageSource)) {
+      // Handle URL images with retry logic
+      const maxRetries = 3;
+      const timeoutMs = 30000; // 30 seconds
+      const retryDelays = [1000, 2000, 4000]; // 1s, 2s, 4s exponential backoff
+
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          // Decode URL-encoded characters to handle escaped sequences like \&
+          const decodedUrl = imageSource.replace(/\\&/g, '&');
+          const redactedUrl = redactUrl(decodedUrl);
+
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+          try {
+            const response = await fetch(decodedUrl, {
+              signal: controller.signal,
+            });
+
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+              // Fail fast on 4xx errors (except 429 which is retryable)
+              if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+                throw new FileUploadError(
+                  `Failed to fetch image from ${redactedUrl} (Status: ${response.status})`
+                );
+              }
+              throw new FileUploadError(
+                `Failed to fetch image from ${redactedUrl} (Status: ${response.status})`
+              );
+            }
+            const arrayBuffer = await response.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+            const filename = decodedUrl.split('/').pop() || 'image.jpg';
+            const mimeType = this.getMimeType(filename, buffer);
+            return { buffer, mimeType, filename };
+          } catch (fetchError) {
+            clearTimeout(timeoutId);
+            throw fetchError;
+          }
+        } catch (error) {
+          const isLastAttempt = attempt === maxRetries - 1;
+          const errorMsg = redactError(error);
+
+          // Check if this is a terminal error (4xx except 429)
+          if (error instanceof FileUploadError && error.message.includes('Status: 4')) {
+            const statusMatch = error.message.match(/Status: (\d+)/);
+            if (statusMatch) {
+              const status = parseInt(statusMatch[1], 10);
+              if (status >= 400 && status < 500 && status !== 429) {
+                throw error; // Fail fast on terminal 4xx errors
+              }
+            }
+          }
+
+          if (isLastAttempt) {
+            throw new FileUploadError(
+              `Failed to download image from URL after ${maxRetries} attempts: ${errorMsg}`
+            );
+          }
+
+          const delayMs = retryDelays[attempt];
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+      }
+    }
+
+    if (this.isLocalFilePath(imageSource)) {
+      // Handle local files
+      try {
+        const normalizedPath = path.normalize(imageSource);
+        await fs.access(normalizedPath);
+        const buffer = await fs.readFile(normalizedPath);
+        const filename = path.basename(normalizedPath);
+        const mimeType = this.getMimeType(filename, buffer);
+        return { buffer, mimeType, filename };
+      } catch (error) {
+        throw new FileUploadError(
+          `Failed to read local file ${imageSource}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+
+    throw new FileUploadError(`Invalid image source format: ${imageSource}`);
+  }
+
+  private isPublicUrl(url: string): boolean {
+    return url.startsWith('http://') || url.startsWith('https://');
+  }
+
+  private isGcsUri(uri: string): boolean {
+    return uri.startsWith('gs://');
+  }
+
+  private isLocalFilePath(filePath: string): boolean {
+    // Unix/Linux absolute paths
+    if (filePath.startsWith('/')) {
+      return true;
+    }
+
+    // Unix/Linux and Windows relative paths with ./ or ../
+    if (
+      filePath.startsWith('./') ||
+      filePath.startsWith('../')
+    ) {
+      return true;
+    }
+
+    // Windows paths with drive letter (e.g., "C:\", "D:/", etc.)
+    if (/^[a-zA-Z]:[\\/]/.test(filePath)) {
+      return true;
+    }
+
+    // Windows UNC paths (e.g., "\\server\share")
+    if (filePath.startsWith('\\\\')) {
+      return true;
+    }
+
+    // Windows relative paths with backslashes (e.g., "..\folder", ".\file")
+    if (
+      filePath.includes('\\') &&
+      (filePath.startsWith('.\\') || filePath.startsWith('..\\'))
+    ) {
+      return true;
+    }
+
+    // Relative paths with forward slashes (e.g., "folder/file.jpg")
+    // Check if it contains a path separator and doesn't look like a URL
+    if (
+      (filePath.includes('/') || filePath.includes('\\')) &&
+      !filePath.startsWith('http://') &&
+      !filePath.startsWith('https://') &&
+      !filePath.startsWith('gs://')
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private isSupportedFileType(mimeType: string): boolean {
+    const allowedImageTypes = this.configService.getAllowedImageFormats();
+    const allowedVideoTypes = this.configService.getAllowedVideoFormats();
+    const normalizedMimeType = this.normalizeMimeType(mimeType);
+
+    if (normalizedMimeType.startsWith('image/')) {
+      const extension = normalizedMimeType.split('/')[1];
+      return allowedImageTypes.includes(extension);
+    }
+
+    if (normalizedMimeType.startsWith('video/')) {
+      const extension = normalizedMimeType.split('/')[1];
+      return allowedVideoTypes.includes(extension);
+    }
+
+    return false;
+  }
+
+  private getSupportedFileTypes(): string[] {
+    const imageTypes = this.configService.getAllowedImageFormats();
+    const videoTypes = this.configService.getAllowedVideoFormats();
+    return [...imageTypes, ...videoTypes];
+  }
+
+  private normalizeMimeType(mimeType: string): string {
+    return normalizeMimeType(mimeType);
+  }
+
+  private getMaxFileSize(mimeType: string): number {
+    if (mimeType.startsWith('image/')) {
+      return this.configService.getMaxImageSize();
+    }
+
+    if (mimeType.startsWith('video/')) {
+      return this.configService.getMaxVideoSize();
+    }
+
+    return 10 * 1024 * 1024; // 10MB default for other types
+  }
+
+  private getMimeType(filename: string, buffer?: Buffer): string {
+    // Try to determine MIME type from file extension first
+    const extension = path.extname(filename).toLowerCase().substring(1);
+    const mimeTypes: Record<string, string> = {
+      // Images
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      png: 'image/png',
+      gif: 'image/gif',
+      webp: 'image/webp',
+      bmp: 'image/bmp',
+      tiff: 'image/tiff',
+      avif: 'image/avif',
+      heic: 'image/heic',
+      heif: 'image/heif',
+      // Videos
+      mp4: 'video/mp4',
+      mov: 'video/quicktime',
+      avi: 'video/x-msvideo',
+      mpeg: 'video/mpeg',
+      mpg: 'video/mpg',
+      mkv: 'video/x-matroska',
+      webm: 'video/webm',
+      flv: 'video/x-flv',
+      wmv: 'video/x-ms-wmv',
+      '3gp': 'video/3gpp',
+      m4v: 'video/x-m4v',
+    };
+
+    const mimeType = mimeTypes[extension];
+    if (mimeType) {
+      return mimeType;
+    }
+
+    // If buffer is available, try to determine from file signature
+    if (buffer) {
+      return this.getMimeTypeFromBuffer(buffer);
+    }
+
+    // Default fallback
+    return extension.includes('jpg') || extension.includes('jpeg')
+      ? 'image/jpeg'
+      : 'application/octet-stream';
+  }
+
+  private getMimeTypeFromBuffer(buffer: Buffer): string {
+    // Check PNG signature
+    if (
+      buffer.length >= 8 &&
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47 &&
+      buffer[4] === 0x0d &&
+      buffer[5] === 0x0a &&
+      buffer[6] === 0x1a &&
+      buffer[7] === 0x0a
+    ) {
+      return 'image/png';
+    }
+
+    // Check JPEG signature
+    if (
+      buffer.length >= 3 &&
+      buffer[0] === 0xff &&
+      buffer[1] === 0xd8 &&
+      buffer[2] === 0xff
+    ) {
+      return 'image/jpeg';
+    }
+
+    // Check GIF signatures
+    if (buffer.length >= 6) {
+      const header = buffer.slice(0, 6).toString('ascii');
+      if (header === 'GIF87a' || header === 'GIF89a') {
+        return 'image/gif';
+      }
+    }
+
+    // Check WebP signature (RIFF....WEBP)
+    if (
+      buffer.length >= 12 &&
+      buffer.slice(0, 4).toString('ascii') === 'RIFF' &&
+      buffer.slice(8, 12).toString('ascii') === 'WEBP'
+    ) {
+      return 'image/webp';
+    }
+
+    // Check for video formats
+    if (buffer.length >= 4 && buffer.slice(0, 4).toString('ascii') === 'RIFF') {
+      // This could be AVI or WebM, default to WebM
+      return 'video/webm';
+    }
+
+    // Check for MP4/MOV (ftyp box)
+    if (buffer.length >= 8 && buffer.slice(4, 8).toString('ascii') === 'ftyp') {
+      return 'video/mp4';
+    }
+
+    return 'application/octet-stream';
+  }
+
+  private getFileExtension(mimeType: string): string {
+    return FileService.getFileExtension(mimeType);
+  }
+
+  // Static utility methods
+
+  static isImageFile(mimeType: string): boolean {
+    return mimeType.startsWith('image/');
+  }
+
+  static isVideoFile(mimeType: string): boolean {
+    return mimeType.startsWith('video/');
+  }
+
+  static getFileExtension(mimeType: string): string {
+    const extensions: Record<string, string> = {
+      'image/jpeg': 'jpg',
+      'image/png': 'png',
+      'image/gif': 'gif',
+      'image/webp': 'webp',
+      'image/bmp': 'bmp',
+      'image/tiff': 'tiff',
+      'image/heic': 'heic',
+      'image/heif': 'heif',
+      'video/mp4': 'mp4',
+      'video/mov': 'mov',
+      'video/quicktime': 'mov',
+      'video/avi': 'avi',
+      'video/x-msvideo': 'avi',
+      'video/mpeg': 'mpeg',
+      'video/mpg': 'mpg',
+      'video/x-matroska': 'mkv',
+      'video/webm': 'webm',
+      'video/x-flv': 'flv',
+      'video/wmv': 'wmv',
+      'video/x-ms-wmv': 'wmv',
+      'video/3gpp': '3gp',
+      'video/x-m4v': 'm4v',
+    };
+
+    return extensions[mimeType] || 'bin';
+  }
+}

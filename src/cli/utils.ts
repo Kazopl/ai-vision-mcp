@@ -1,0 +1,164 @@
+import type { AnalysisResult } from '../types/Providers.js';
+import type { ObjectDetectionResponse } from '../types/ObjectDetection.js';
+import type { SegmentationResponse } from '../types/Segmentation.js';
+import type { ExtractVideoFrameResponse } from '../tools/extract_video_frame.js';
+import type {
+  VideoMetadata,
+  MediaResolutionLevel,
+  ThinkingLevel,
+} from '../types/Analysis.js';
+
+export function parseOptions(options: Record<string, string>): {
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  maxTokens?: number;
+  videoMetadata?: VideoMetadata;
+  mediaResolution?: MediaResolutionLevel;
+  thinkingLevel?: ThinkingLevel;
+} {
+  const result: {
+    temperature?: number;
+    topP?: number;
+    topK?: number;
+    maxTokens?: number;
+    videoMetadata?: VideoMetadata;
+    mediaResolution?: MediaResolutionLevel;
+    thinkingLevel?: ThinkingLevel;
+  } = {};
+
+  if (options.temperature) {
+    result.temperature = parseFloat(options.temperature);
+  }
+  if (options['top-p'] || options.topP) {
+    result.topP = parseFloat(options['top-p'] || options.topP);
+  }
+  if (options['top-k'] || options.topK) {
+    result.topK = parseInt(options['top-k'] || options.topK);
+  }
+  if (options['max-tokens'] || options.maxTokens) {
+    result.maxTokens = parseInt(options['max-tokens'] || options.maxTokens);
+  }
+
+  // Parse video metadata options
+  const videoMetadata: VideoMetadata = {};
+  if (options['start-offset'] || options.startOffset) {
+    videoMetadata.startOffset = options['start-offset'] || options.startOffset;
+  }
+  if (options['end-offset'] || options.endOffset) {
+    videoMetadata.endOffset = options['end-offset'] || options.endOffset;
+  }
+  if (options.fps) {
+    const fpsValue = parseFloat(options.fps);
+    if (!isNaN(fpsValue)) {
+      videoMetadata.fps = fpsValue;
+    }
+  }
+
+  // Only add videoMetadata if at least one field is set
+  if (videoMetadata.startOffset !== undefined || videoMetadata.endOffset !== undefined || videoMetadata.fps !== undefined) {
+    result.videoMetadata = videoMetadata;
+  }
+
+  const rawMediaResolution =
+    options['media-resolution'] || options.mediaResolution;
+  // Accept both kebab-case (CLI style) and snake_case (API style)
+  const mediaResolution =
+    rawMediaResolution === 'ultra-high' ? 'ultra_high' : rawMediaResolution;
+  if (
+    mediaResolution === 'low' ||
+    mediaResolution === 'medium' ||
+    mediaResolution === 'high' ||
+    mediaResolution === 'ultra_high'
+  ) {
+    result.mediaResolution = mediaResolution;
+  }
+
+  const thinkingLevel = options['thinking-level'] || options.thinkingLevel;
+  if (
+    thinkingLevel === 'minimal' ||
+    thinkingLevel === 'low' ||
+    thinkingLevel === 'medium' ||
+    thinkingLevel === 'high'
+  ) {
+    result.thinkingLevel = thinkingLevel;
+  }
+
+  return result;
+}
+
+export function formatOutput(
+  result:
+    | AnalysisResult
+    | ObjectDetectionResponse
+    | SegmentationResponse
+    | ExtractVideoFrameResponse,
+  jsonMode?: boolean
+): string {
+  if (jsonMode) {
+    return JSON.stringify(result, null, 2);
+  }
+
+  // Human-readable format
+  if ('text' in result) {
+    return result.text;
+  }
+
+  if ('detections' in result) {
+    return result.summary || JSON.stringify(result.detections, null, 2);
+  }
+
+  if ('segments' in result) {
+    return result.summary || JSON.stringify(result.segments, null, 2);
+  }
+
+  if ('frames' in result) {
+    return result.summary || JSON.stringify(result.frames, null, 2);
+  }
+
+  return JSON.stringify(result, null, 2);
+}
+
+export function handleError(error: unknown, jsonMode?: boolean): never {
+  if (jsonMode) {
+    // Output JSON error to stdout
+    const errorResponse = {
+      error: true,
+      message: error instanceof Error ? error.message : 'An unknown error occurred',
+    };
+    console.log(JSON.stringify(errorResponse, null, 2));
+  } else {
+    // Output human-readable error to stderr
+    if (error instanceof Error) {
+      console.error(`Error: ${error.message}`);
+    } else {
+      console.error('An unknown error occurred');
+    }
+  }
+  process.exit(1);
+}
+
+export function parseArgs(args: string[]): { positional: string[]; options: Record<string, string> } {
+  const positional: string[] = [];
+  const options: Record<string, string> = {};
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith('--')) {
+      const key = arg.replace('--', '');
+      // Look ahead to see if next arg is a value or another option
+      const nextArg = args[i + 1];
+      if (nextArg !== undefined && !nextArg.startsWith('--')) {
+        options[key] = nextArg;
+        i++; // Skip the value
+      } else {
+        // Flag option without value (like --json)
+        options[key] = '';
+      }
+    } else {
+      positional.push(arg);
+    }
+  }
+
+  return { positional, options };
+}
