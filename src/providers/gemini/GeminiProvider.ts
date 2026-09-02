@@ -31,6 +31,10 @@ import {
 } from '../../utils/mediaSources.js';
 import { processVideoSource } from '../../utils/videoSourceHandler.js';
 import { processImageSource } from '../../utils/imageSourceHandler.js';
+import {
+  loadAudioSource,
+  AUDIO_INLINE_THRESHOLD,
+} from '../../utils/audioSourceHandler.js';
 
 export class GeminiProvider extends BaseVisionProvider {
   private client: GoogleGenAI;
@@ -610,6 +614,104 @@ export class GeminiProvider extends BaseVisionProvider {
       return Buffer.from(await response.arrayBuffer());
     } catch (error) {
       throw this.handleError(error, 'file download');
+    }
+  }
+
+  async analyzeAudio(
+    audioSource: string,
+    prompt: string,
+    options?: AnalysisOptions
+  ): Promise<AnalysisResult> {
+    try {
+      let content: any;
+      let fileSize: number | undefined;
+      let processingDuration = 0;
+
+      if (isFileReferenceSource(audioSource)) {
+        // Files API reference: resolve the real mimeType from metadata
+        let mimeType = 'audio/mpeg';
+        try {
+          const fileId = `files/${audioSource.split('/').pop()}`;
+          const metadata = await this.getFileMetadata(fileId);
+          if (metadata.mimeType) mimeType = metadata.mimeType;
+        } catch {
+          // keep fallback
+        }
+        content = { fileData: { fileUri: audioSource, mimeType } };
+      } else {
+        const { result: loaded, duration: loadDuration } =
+          await this.measureAsync(async () => loadAudioSource(audioSource));
+        processingDuration += loadDuration;
+        fileSize = loaded.buffer.length;
+
+        if (loaded.buffer.length <= AUDIO_INLINE_THRESHOLD) {
+          content = {
+            inlineData: {
+              mimeType: loaded.mimeType,
+              data: loaded.buffer.toString('base64'),
+            },
+          };
+        } else {
+          // Large audio: upload via Files API
+          const { result: uploadedFile, duration: uploadDuration } =
+            await this.measureAsync(async () => {
+              return await this.uploadFile(
+                loaded.buffer,
+                loaded.filename,
+                loaded.mimeType
+              );
+            });
+          processingDuration += uploadDuration;
+          const fileId = uploadedFile.uri!.split('/').pop()!;
+          await this.waitForFileProcessing(fileId);
+          content = {
+            fileData: {
+              fileUri: uploadedFile.uri!,
+              mimeType: loaded.mimeType,
+            },
+          };
+        }
+      }
+
+      const model = this.resolveModelForFunction(
+        'video',
+        options?.functionName
+      );
+
+      const { result: response, duration: analysisDuration } =
+        await this.measureAsync(async () => {
+          return await this.client.models.generateContent({
+            model,
+            contents: [content, { text: prompt }],
+            config: this.buildConfigWithOptions(
+              'video',
+              options?.functionName,
+              options
+            ),
+          });
+        });
+
+      const text = response.text || '';
+      const usage = response.usageMetadata;
+
+      return this.createAnalysisResult(
+        text,
+        model,
+        usage
+          ? {
+            promptTokenCount: usage.promptTokenCount || 0,
+            candidatesTokenCount: usage.candidatesTokenCount || 0,
+            totalTokenCount: usage.totalTokenCount || 0,
+          }
+          : undefined,
+        processingDuration + analysisDuration,
+        content.fileData?.mimeType || content.inlineData?.mimeType,
+        fileSize,
+        response.modelVersion,
+        response.responseId
+      );
+    } catch (error) {
+      throw this.handleError(error, 'audio analysis');
     }
   }
 

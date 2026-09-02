@@ -455,6 +455,25 @@ export abstract class BaseVisionProvider implements VisionProvider {
       }
     }
 
+    // Agentic Vision (Gemini 3+ Flash): enable the code-execution tool so
+    // the model can zoom/crop/annotate the image itself in a sandboxed
+    // Python loop before answering. Opt-in per call or via AGENTIC_VISION
+    // env - it adds latency and Google warns it can regress non-visual
+    // tasks. Image tasks only.
+    const agenticVision =
+      options?.agenticVision ??
+      (taskType === 'image'
+        ? this.configService.getAgenticVisionDefault()
+        : false);
+    if (
+      agenticVision &&
+      taskType === 'image' &&
+      geminiVersion !== null &&
+      geminiVersion >= 3
+    ) {
+      config.tools = [{ codeExecution: {} }];
+    }
+
     // Add thinking configuration for Gemini models
     // Supports both Gemini 2.5 (thinkingBudget) and Gemini 3+ (thinkingLevel)
     // An explicit thinking level (runtime option, then THINKING_LEVEL[_FOR_*]

@@ -56,6 +56,7 @@ export const ConfigSchema = z.object({
   DETECT_OBJECTS_IN_IMAGE_MODEL: z.string().min(1).optional(),
   SEGMENT_OBJECTS_IN_IMAGE_MODEL: z.string().min(1).optional(),
   ANALYZE_VIDEO_MODEL: z.string().min(1).optional(),
+  ANALYZE_AUDIO_MODEL: z.string().min(1).optional(),
 
   // Gemini API configuration
   GEMINI_API_KEY: z.string().min(1).optional(),
@@ -117,6 +118,9 @@ export const ConfigSchema = z.object({
 
   // Video processing mode (Gemini 3.6+, 3.5-flash-lite)
   VIDEO_PROCESSING: z.enum(['agentic', 'static']).optional(),
+
+  // Agentic Vision default for image analysis (Gemini 3+)
+  AGENTIC_VISION: z.enum(['true', 'false']).optional(),
 
   // Function-specific API parameters
   TEMPERATURE_FOR_ANALYZE_IMAGE: z.number().min(0).max(2).optional(),
@@ -181,6 +185,10 @@ export const ConfigSchema = z.object({
   TOP_P_FOR_ANALYZE_VIDEO: z.number().min(0).max(1).optional(),
   TOP_K_FOR_ANALYZE_VIDEO: z.number().int().positive().optional(),
   MAX_TOKENS_FOR_ANALYZE_VIDEO: z.number().int().positive().optional(),
+  TEMPERATURE_FOR_ANALYZE_AUDIO: z.number().min(0).max(2).optional(),
+  TOP_P_FOR_ANALYZE_AUDIO: z.number().min(0).max(1).optional(),
+  TOP_K_FOR_ANALYZE_AUDIO: z.number().int().positive().optional(),
+  MAX_TOKENS_FOR_ANALYZE_AUDIO: z.number().int().positive().optional(),
 
   // File processing configuration
   MAX_IMAGE_SIZE: z.coerce

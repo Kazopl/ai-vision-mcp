@@ -24,6 +24,11 @@ import { RetryHandler } from '../../utils/retry.js';
 import { formatDuration } from '../../utils/duration.js';
 import { processVideoSource } from '../../utils/videoSourceHandler.js';
 import { processImageSource } from '../../utils/imageSourceHandler.js';
+import {
+  loadAudioSource,
+  getAudioMimeType,
+  AUDIO_INLINE_THRESHOLD,
+} from '../../utils/audioSourceHandler.js';
 
 export class VertexAIProvider extends BaseVisionProvider {
   private client: GoogleGenAI;
@@ -533,6 +538,89 @@ export class VertexAIProvider extends BaseVisionProvider {
       );
     } catch (error) {
       throw this.handleError(error, 'video analysis');
+    }
+  }
+
+  async analyzeAudio(
+    audioSource: string,
+    prompt: string,
+    options?: AnalysisOptions
+  ): Promise<AnalysisResult> {
+    try {
+      let audioPart: any;
+      let fileSize: number | undefined;
+      let processingDuration = 0;
+
+      if (audioSource.startsWith('gs://')) {
+        audioPart = {
+          fileData: {
+            fileUri: audioSource,
+            mimeType: getAudioMimeType(audioSource),
+          },
+        };
+      } else {
+        const { result: loaded, duration: loadDuration } =
+          await this.measureAsync(async () => loadAudioSource(audioSource));
+        processingDuration += loadDuration;
+        fileSize = loaded.buffer.length;
+
+        if (loaded.buffer.length > AUDIO_INLINE_THRESHOLD) {
+          throw new ProviderError(
+            `Audio file is too large for inline transport (${Math.round(loaded.buffer.length / 1024 / 1024)}MB > 18MB). Upload it to GCS and pass the gs:// URI instead.`,
+            'vertex_ai'
+          );
+        }
+
+        audioPart = {
+          inlineData: {
+            mimeType: loaded.mimeType,
+            data: loaded.buffer.toString('base64'),
+          },
+        };
+      }
+
+      const model = this.resolveModelForFunction(
+        'video',
+        options?.functionName
+      );
+
+      const { result: response, duration: analysisDuration } =
+        await this.measureAsync(async () => {
+          return await this.client.models.generateContent({
+            model,
+            contents: [{ role: 'user', parts: [audioPart, { text: prompt }] }],
+            config: this.buildConfigWithOptions(
+              'video',
+              options?.functionName,
+              options
+            ),
+          });
+        });
+
+      const text = response.text || '';
+      const usage = response.usageMetadata;
+
+      return this.createAnalysisResult(
+        text,
+        model,
+        usage &&
+          usage.promptTokenCount &&
+          usage.candidatesTokenCount &&
+          usage.totalTokenCount
+          ? {
+              promptTokenCount: usage.promptTokenCount,
+              candidatesTokenCount: usage.candidatesTokenCount,
+              totalTokenCount: usage.totalTokenCount,
+            }
+          : undefined,
+        processingDuration + analysisDuration,
+        audioPart.fileData?.mimeType || audioPart.inlineData?.mimeType,
+        fileSize,
+        response.modelVersion,
+        response.responseId
+      );
+    } catch (error) {
+      throw this.handleError(error, 'audio analysis');
     }
   }
 

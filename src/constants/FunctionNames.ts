@@ -8,6 +8,7 @@ export const FUNCTION_NAMES = {
   DETECT_OBJECTS_IN_IMAGE: 'detect_objects_in_image',
   SEGMENT_OBJECTS_IN_IMAGE: 'segment_objects_in_image',
   ANALYZE_VIDEO: 'analyze_video',
+  ANALYZE_AUDIO: 'analyze_audio',
 } as const;
 
 export type FunctionName = (typeof FUNCTION_NAMES)[keyof typeof FUNCTION_NAMES];
@@ -20,7 +21,10 @@ export const IMAGE_FUNCTIONS = [
   FUNCTION_NAMES.SEGMENT_OBJECTS_IN_IMAGE,
 ] as const;
 
-export const VIDEO_FUNCTIONS = [FUNCTION_NAMES.ANALYZE_VIDEO] as const;
+export const VIDEO_FUNCTIONS = [
+  FUNCTION_NAMES.ANALYZE_VIDEO,
+  FUNCTION_NAMES.ANALYZE_AUDIO,
+] as const;
 
 export const ALL_FUNCTIONS = [...IMAGE_FUNCTIONS, ...VIDEO_FUNCTIONS] as const;
 

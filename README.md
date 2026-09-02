@@ -243,7 +243,7 @@ npx ai-vision-mcp
 
 ## MCP Tools
 
-The server provides seven MCP tools:
+The server provides eight MCP tools:
 
 ### 1) `analyze_image`
 
@@ -258,7 +258,7 @@ Analyzes an image using AI and returns a detailed description.
   - `hierarchy` - Analyze visual hierarchy and eye flow
   - `components` - Catalog UI components and design system maturity
 - `cropRegion` (object, optional): `{x, y, width, height}` in pixels (top-left origin). Crops the image before analysis - zooming into the region of interest greatly improves small-text OCR and reduces tokens
-- `options` (object, optional): Analysis options including temperature, max tokens, `mediaResolution` (low/medium/high/ultra_high, Gemini 3+ token resolution for the image) and `thinkingLevel` (minimal/low/medium/high, Gemini 3+ reasoning depth)
+- `options` (object, optional): Analysis options including temperature, max tokens, `mediaResolution` (low/medium/high/ultra_high, Gemini 3+ token resolution for the image), `thinkingLevel` (minimal/low/medium/high, Gemini 3+ reasoning depth), and `agenticVision` (boolean, Gemini 3+): the model runs sandboxed Python to zoom, crop, annotate, and measure the image itself before answering - an automatic alternative to `cropRegion` for tiny text, fine details, and precise counting (adds latency; enable globally with `AGENTIC_VISION=true`)
 
 **Examples:**
 
@@ -477,7 +477,18 @@ Verified on a 1080p screencast with 10px text: video-level analysis at `high` re
 { "videoSource": "/path/to/demo.mp4", "sceneDetect": true, "maxFrames": 10 }
 ```
 
-### 7) `analyze_video`
+### 7) `analyze_audio`
+
+Analyzes audio files using Gemini's native audio understanding: transcription (ask for MM:SS timestamps), summarization, speaker identification, and non-speech sound description. Audio costs ~32 tokens/second, so about an hour fits comfortably in context.
+
+**Parameters:**
+- `audioSource` (string): URL, base64 data URI (`data:audio/...`), or local file path (mp3, wav, aac, flac, ogg, aiff, m4a)
+- `prompt` (string): e.g. "Transcribe with speaker labels and MM:SS timestamps"
+- `options` (object, optional): `temperature`, `maxTokens` (use 8000+ for full transcriptions), `thinkingLevel`
+
+Files up to 18MB are sent inline; larger files upload via the Files API automatically (Gemini provider) or need a `gs://` URI (Vertex AI).
+
+### 8) `analyze_video`
 
 **Agentic video understanding (default).** On supported models (Gemini 3.6+, 3.5-flash-lite) the model navigates the video on demand - searching the transcript and fetching only the frames it needs - instead of statically ingesting every frame. Measured on a 45s video: 40 prompt tokens agentic vs 13,573 static, with the same answer quality; Google reports up to 66% cost reduction and better accuracy on long videos. Control it with the `processing` option (`agentic`/`static`) or the `VIDEO_PROCESSING` env var. Using `videoMetadata` (clipping/fps) automatically switches the request to static, since the API does not allow combining them; unsupported models also fall back to static.
 

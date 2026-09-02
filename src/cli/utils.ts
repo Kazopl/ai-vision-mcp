@@ -18,6 +18,7 @@ export function parseOptions(options: Record<string, string>): {
   mediaResolution?: MediaResolutionLevel;
   thinkingLevel?: ThinkingLevel;
   processing?: VideoProcessingMode;
+  agenticVision?: boolean;
 } {
   const result: {
     temperature?: number;
@@ -28,6 +29,7 @@ export function parseOptions(options: Record<string, string>): {
     mediaResolution?: MediaResolutionLevel;
     thinkingLevel?: ThinkingLevel;
     processing?: VideoProcessingMode;
+    agenticVision?: boolean;
   } = {};
 
   if (options.temperature) {
@@ -90,6 +92,10 @@ export function parseOptions(options: Record<string, string>): {
   const processing = options.processing;
   if (processing === 'agentic' || processing === 'static') {
     result.processing = processing;
+  }
+
+  if ('agentic-vision' in options || options.agenticVision === 'true') {
+    result.agenticVision = true;
   }
 
   return result;

@@ -5,6 +5,7 @@ import { runCompareImages } from './commands/compare-images.js';
 import { runDetectObjects } from './commands/detect-objects.js';
 import { runSegmentObjects } from './commands/segment-objects.js';
 import { runAnalyzeVideo } from './commands/analyze-video.js';
+import { runAnalyzeAudio } from './commands/analyze-audio.js';
 import { runAuditDesign } from './commands/audit-design.js';
 import { runExtractFrame } from './commands/extract-frame.js';
 
@@ -31,6 +32,9 @@ export async function runCli(args: string[]): Promise<void> {
       break;
     case 'analyze-video':
       await runAnalyzeVideo(commandArgs, config);
+      break;
+    case 'analyze-audio':
+      await runAnalyzeAudio(commandArgs, config);
       break;
     case 'audit-design':
       await runAuditDesign(commandArgs, config);
@@ -62,6 +66,7 @@ Commands:
   detect-objects <source>      Detect objects in an image
   segment-objects <source>     Segment objects (mask overlay image)
   analyze-video <source>       Analyze a video
+  analyze-audio <source>       Analyze audio (transcribe, summarize, identify speakers)
   audit-design <source>        Audit design compliance (pixel metrics + Gemini critique)
   extract-frame <source>       Extract video frames via ffmpeg (local, no AI call)
 

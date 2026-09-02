@@ -35,6 +35,7 @@ export interface AnalysisOptions {
   mediaResolution?: MediaResolutionLevel; // Token resolution for input media (Gemini 3+)
   thinkingLevel?: ThinkingLevel; // Reasoning depth (Gemini 3+)
   processing?: VideoProcessingMode; // Video processing mode (Gemini 3.6+, 3.5-flash-lite)
+  agenticVision?: boolean; // Agentic Vision: model zooms/crops via code execution (Gemini 3+)
 }
 
 /**

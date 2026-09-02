@@ -14,6 +14,7 @@ import {
   analyze_image,
   compare_images,
   analyze_video,
+  analyze_audio,
   detect_objects_in_image,
   segment_objects_in_image,
   audit_design,
@@ -277,6 +278,12 @@ server.registerTool<any, any>(
             .optional()
             .describe(
               'Reasoning depth (Gemini 3+ models only). Use "high" for hard visual reasoning or precise OCR; "minimal"/"low" for fast simple descriptions. Thinking tokens count toward maxTokens, so pair "high" with maxTokens >= 4000 or the answer gets truncated.'
+            ),
+          agenticVision: z
+            .boolean()
+            .optional()
+            .describe(
+              'Agentic Vision (Gemini 3+ models). The model runs sandboxed Python to zoom, crop, annotate, and measure the image itself before answering - best for tiny text, fine details, precise counting, or reading dense UI. Adds latency (multiple code rounds) and is unnecessary for simple descriptions. An alternative to manually specifying cropRegion.'
             ),
         })
         .optional(),
@@ -800,6 +807,98 @@ server.registerTool<any, any>(
                 message: errorMessage,
                 tool: 'segment_objects_in_image',
               },
+              null,
+              2
+            ),
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Register analyze_audio tool
+server.registerTool<any, any>(
+  'analyze_audio',
+  {
+    title: 'Analyze Audio',
+    description:
+      'Analyze an audio file using Gemini native audio understanding: transcription (with timestamps on request), summarization, speaker identification, and non-speech sound description. Supports mp3, wav, aac, flac, ogg, aiff, m4a via URL, base64 data URI, or local file path. Audio costs ~32 tokens/second (~1 hour fits comfortably in context).',
+    inputSchema: z.object({
+      audioSource: z
+        .string()
+        .describe(
+          'Audio source - URL, base64 data URI (data:audio/...), or local file path'
+        ),
+      prompt: z
+        .string()
+        .describe(
+          'What to do with the audio, e.g. "Transcribe with speaker labels and MM:SS timestamps", "Summarize this meeting", "What sounds are audible?"'
+        ),
+      options: z
+        .object({
+          temperature: z.number().min(0).max(2).optional(),
+          maxTokens: z
+            .number()
+            .int()
+            .min(1)
+            .max(65536)
+            .optional()
+            .describe(
+              'Max output tokens. Full transcriptions of long audio need generous budgets (8000+).'
+            ),
+          thinkingLevel: z
+            .enum(['minimal', 'low', 'medium', 'high'])
+            .optional()
+            .describe(
+              'Reasoning depth (Gemini 3+ models only). "low" is enough for transcription; thinking tokens count toward maxTokens.'
+            ),
+        })
+        .optional(),
+    }),
+  },
+  async (args: any, _extra: any) => {
+    const { audioSource, prompt, options } = args;
+    try {
+      const { config, videoProvider } = getServices();
+
+      const result = await analyze_audio(
+        { audioSource, prompt, options },
+        config,
+        videoProvider
+      );
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      void logger.error(
+        { msg: 'Error executing analyze_audio tool', error: String(error) },
+        'tools/analyze_audio'
+      );
+
+      let errorMessage = 'An unknown error occurred';
+      if (error instanceof VisionError) {
+        errorMessage = `${error.name}: ${error.message}`;
+        if (error.provider) {
+          errorMessage += ` (Provider: ${error.provider})`;
+        }
+      } else if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              { error: true, message: errorMessage, tool: 'analyze_audio' },
               null,
               2
             ),

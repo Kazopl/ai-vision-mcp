@@ -28,6 +28,7 @@ export interface Config {
   DETECT_OBJECTS_IN_IMAGE_MODEL?: string;
   SEGMENT_OBJECTS_IN_IMAGE_MODEL?: string;
   ANALYZE_VIDEO_MODEL?: string;
+  ANALYZE_AUDIO_MODEL?: string;
 
   // Google Cloud Storage configuration (for Vertex AI file storage)
   // Uses VERTEX_CLIENT_EMAIL, VERTEX_PRIVATE_KEY, VERTEX_PROJECT_ID for auth
@@ -51,6 +52,9 @@ export interface Config {
 
   // Video processing mode (Gemini 3.6+, 3.5-flash-lite): 'agentic' | 'static'
   VIDEO_PROCESSING?: string;
+
+  // Agentic Vision default for image analysis (Gemini 3+): 'true' | 'false'
+  AGENTIC_VISION?: string;
 
   // Task-specific API parameters
   TEMPERATURE_FOR_IMAGE?: number;
@@ -83,6 +87,10 @@ export interface Config {
   TOP_P_FOR_ANALYZE_VIDEO?: number;
   TOP_K_FOR_ANALYZE_VIDEO?: number;
   MAX_TOKENS_FOR_ANALYZE_VIDEO?: number;
+  TEMPERATURE_FOR_ANALYZE_AUDIO?: number;
+  TOP_P_FOR_ANALYZE_AUDIO?: number;
+  TOP_K_FOR_ANALYZE_AUDIO?: number;
+  MAX_TOKENS_FOR_ANALYZE_AUDIO?: number;
   TEMPERATURE_FOR_AUDIT_DESIGN?: number;
   TOP_P_FOR_AUDIT_DESIGN?: number;
   TOP_K_FOR_AUDIT_DESIGN?: number;

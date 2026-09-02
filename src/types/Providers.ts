@@ -36,6 +36,12 @@ export interface VisionProvider {
     prompt: string,
     options?: AnalysisOptions
   ): Promise<AnalysisResult>;
+  /** Optional: audio understanding (transcription, summarization, speaker ID) */
+  analyzeAudio?(
+    audioSource: string,
+    prompt: string,
+    options?: AnalysisOptions
+  ): Promise<AnalysisResult>;
   compareImages(
     imageSources: string[],
     prompt: string,

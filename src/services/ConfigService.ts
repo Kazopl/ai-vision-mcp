@@ -173,6 +173,7 @@ export class ConfigService {
         SEGMENT_OBJECTS_IN_IMAGE_MODEL:
           process.env.SEGMENT_OBJECTS_IN_IMAGE_MODEL,
         ANALYZE_VIDEO_MODEL: process.env.ANALYZE_VIDEO_MODEL,
+        ANALYZE_AUDIO_MODEL: process.env.ANALYZE_AUDIO_MODEL,
 
         // Google Cloud Storage configuration (uses Vertex AI credentials)
         GCS_BUCKET_NAME: process.env.GCS_BUCKET_NAME,
@@ -199,6 +200,9 @@ export class ConfigService {
 
         // Video processing mode (Gemini 3.6+, 3.5-flash-lite)
         VIDEO_PROCESSING: process.env.VIDEO_PROCESSING,
+
+        // Agentic Vision default for image analysis (Gemini 3+)
+        AGENTIC_VISION: process.env.AGENTIC_VISION,
 
         // Task-specific API parameters
         TEMPERATURE_FOR_IMAGE: process.env.TEMPERATURE_FOR_IMAGE
@@ -295,6 +299,18 @@ export class ConfigService {
           : undefined,
         MAX_TOKENS_FOR_ANALYZE_VIDEO: process.env.MAX_TOKENS_FOR_ANALYZE_VIDEO
           ? parseInt(process.env.MAX_TOKENS_FOR_ANALYZE_VIDEO, 10)
+          : undefined,
+        TEMPERATURE_FOR_ANALYZE_AUDIO: process.env.TEMPERATURE_FOR_ANALYZE_AUDIO
+          ? parseFloat(process.env.TEMPERATURE_FOR_ANALYZE_AUDIO)
+          : undefined,
+        TOP_P_FOR_ANALYZE_AUDIO: process.env.TOP_P_FOR_ANALYZE_AUDIO
+          ? parseFloat(process.env.TOP_P_FOR_ANALYZE_AUDIO)
+          : undefined,
+        TOP_K_FOR_ANALYZE_AUDIO: process.env.TOP_K_FOR_ANALYZE_AUDIO
+          ? parseInt(process.env.TOP_K_FOR_ANALYZE_AUDIO, 10)
+          : undefined,
+        MAX_TOKENS_FOR_ANALYZE_AUDIO: process.env.MAX_TOKENS_FOR_ANALYZE_AUDIO
+          ? parseInt(process.env.MAX_TOKENS_FOR_ANALYZE_AUDIO, 10)
           : undefined,
         TEMPERATURE_FOR_AUDIT_DESIGN: process.env.TEMPERATURE_FOR_AUDIT_DESIGN
           ? parseFloat(process.env.TEMPERATURE_FOR_AUDIT_DESIGN)
@@ -619,6 +635,15 @@ export class ConfigService {
     return this.config.VIDEO_PROCESSING === 'static' ? 'static' : 'agentic';
   }
 
+  /**
+   * Agentic Vision default for image analysis. Off unless AGENTIC_VISION=true
+   * (multi-round sandbox execution adds latency and can regress non-visual
+   * tasks, so it is opt-in per call or via env).
+   */
+  public getAgenticVisionDefault(): boolean {
+    return this.config.AGENTIC_VISION === 'true';
+  }
+
   public getTopPForTask(taskType: 'image' | 'video'): number | undefined {
     switch (taskType) {
       case 'image':
@@ -667,6 +692,8 @@ export class ConfigService {
         return this.config.TEMPERATURE_FOR_SEGMENT_OBJECTS_IN_IMAGE;
       case FUNCTION_NAMES.ANALYZE_VIDEO:
         return this.config.TEMPERATURE_FOR_ANALYZE_VIDEO;
+      case FUNCTION_NAMES.ANALYZE_AUDIO:
+        return this.config.TEMPERATURE_FOR_ANALYZE_AUDIO;
       default:
         return undefined;
     }
@@ -684,6 +711,8 @@ export class ConfigService {
         return this.config.TOP_P_FOR_SEGMENT_OBJECTS_IN_IMAGE;
       case FUNCTION_NAMES.ANALYZE_VIDEO:
         return this.config.TOP_P_FOR_ANALYZE_VIDEO;
+      case FUNCTION_NAMES.ANALYZE_AUDIO:
+        return this.config.TOP_P_FOR_ANALYZE_AUDIO;
       default:
         return undefined;
     }
@@ -701,6 +730,8 @@ export class ConfigService {
         return this.config.TOP_K_FOR_SEGMENT_OBJECTS_IN_IMAGE;
       case FUNCTION_NAMES.ANALYZE_VIDEO:
         return this.config.TOP_K_FOR_ANALYZE_VIDEO;
+      case FUNCTION_NAMES.ANALYZE_AUDIO:
+        return this.config.TOP_K_FOR_ANALYZE_AUDIO;
       default:
         return undefined;
     }
@@ -720,6 +751,8 @@ export class ConfigService {
         return this.config.MAX_TOKENS_FOR_SEGMENT_OBJECTS_IN_IMAGE;
       case FUNCTION_NAMES.ANALYZE_VIDEO:
         return this.config.MAX_TOKENS_FOR_ANALYZE_VIDEO;
+      case FUNCTION_NAMES.ANALYZE_AUDIO:
+        return this.config.MAX_TOKENS_FOR_ANALYZE_AUDIO;
       default:
         return undefined;
     }
@@ -738,6 +771,8 @@ export class ConfigService {
         return this.config.SEGMENT_OBJECTS_IN_IMAGE_MODEL;
       case FUNCTION_NAMES.ANALYZE_VIDEO:
         return this.config.ANALYZE_VIDEO_MODEL;
+      case FUNCTION_NAMES.ANALYZE_AUDIO:
+        return this.config.ANALYZE_AUDIO_MODEL;
       default:
         return undefined;
     }

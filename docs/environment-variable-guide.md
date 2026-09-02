@@ -80,6 +80,7 @@ The AI Vision MCP Server uses a hierarchical configuration system where more spe
 | `DETECT_OBJECTS_IN_IMAGE_MODEL` | No | Model for detect_objects_in_image function | Uses `IMAGE_MODEL` |
 | `SEGMENT_OBJECTS_IN_IMAGE_MODEL` | No | Model for segment_objects_in_image function | Uses `IMAGE_MODEL` |
 | `ANALYZE_VIDEO_MODEL` | No | Model for analyze_video function | Uses `VIDEO_MODEL` |
+| `ANALYZE_AUDIO_MODEL` | No | Model for analyze_audio function | Uses `VIDEO_MODEL` |
 
 ### Media Resolution & Thinking Level (Gemini 3+)
 
@@ -92,6 +93,7 @@ The AI Vision MCP Server uses a hierarchical configuration system where more spe
 | `THINKING_LEVEL_FOR_IMAGE` | No | Overrides `THINKING_LEVEL` for images | - |
 | `THINKING_LEVEL_FOR_VIDEO` | No | Overrides `THINKING_LEVEL` for videos | - |
 | `VIDEO_PROCESSING` | No | Video processing mode: `agentic` (model navigates the video on demand, up to ~97% fewer tokens on long videos) or `static` (fixed-rate frame ingestion). Requires Gemini 3.6+ or 3.5-flash-lite; `videoMetadata` forces static | `agentic` |
+| `AGENTIC_VISION` | No | Default for Agentic Vision on image analysis: the model runs sandboxed Python to zoom/crop/annotate the image itself (Gemini 3+). Per-call `agenticVision` option overrides | `false` |
 | `INLINE_IMAGE_MAX_DIM` | No | Max dimension (px) of the inline annotated-image preview returned by detect/segment/extract tools; `0` disables inline images | `1200` |
 | `FFMPEG_PATH` | No | Path to the ffmpeg binary (used only by `extract_video_frame`) | `ffmpeg` on PATH |
 
