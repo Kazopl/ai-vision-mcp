@@ -286,6 +286,13 @@ server.registerTool<any, any>(
             .describe(
               'Agentic Vision (Gemini 3+ models). The model runs sandboxed Python to zoom, crop, annotate, and measure the image itself before answering - best for tiny text, fine details, precise counting, or reading dense UI. Adds latency (multiple code rounds) and is unnecessary for simple descriptions. An alternative to manually specifying cropRegion.'
             ),
+          seed: z
+            .number()
+            .int()
+            .optional()
+            .describe(
+              'Fixed seed for best-effort reproducibility: repeated identical requests return (mostly) the same answer. Useful for comparing prompts or re-running extractions consistently.'
+            ),
         })
         .optional(),
     }),
@@ -1229,6 +1236,13 @@ server.registerTool<any, any>(
             .optional()
             .describe(
               'Video processing mode (Gemini 3.6+/3.5-flash-lite). "agentic" (default) lets the model navigate the video on demand - transcript search plus targeted frame fetches - cutting tokens by up to ~97% on long videos with equal or better accuracy; ideal for long content and moment retrieval. "static" ingests frames at a fixed rate; required when using videoMetadata (clipping/fps) and preferred for exhaustive frame-precise inspection of short clips. videoMetadata automatically forces static.'
+            ),
+          seed: z
+            .number()
+            .int()
+            .optional()
+            .describe(
+              'Fixed seed for best-effort reproducibility across identical requests.'
             ),
         })
         .optional(),

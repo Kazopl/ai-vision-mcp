@@ -210,6 +210,13 @@ export class ConfigService {
         // Agentic Vision default for image analysis (Gemini 3+)
         AGENTIC_VISION: process.env.AGENTIC_VISION,
 
+        // Safety filter threshold + service tier + request timeout
+        SAFETY_THRESHOLD: process.env.SAFETY_THRESHOLD,
+        SERVICE_TIER: process.env.SERVICE_TIER,
+        GEMINI_TIMEOUT_MS: process.env.GEMINI_TIMEOUT_MS
+          ? parseInt(process.env.GEMINI_TIMEOUT_MS, 10)
+          : undefined,
+
         // Task-specific API parameters
         TEMPERATURE_FOR_IMAGE: process.env.TEMPERATURE_FOR_IMAGE
           ? parseFloat(process.env.TEMPERATURE_FOR_IMAGE)
@@ -648,6 +655,36 @@ export class ConfigService {
    */
   public getAgenticVisionDefault(): boolean {
     return this.config.AGENTIC_VISION === 'true';
+  }
+
+  /**
+   * Safety settings for all harm categories, or undefined for API defaults.
+   * 'block_none' disables probability-based filtering (core protections
+   * remain), which prevents spurious refusals on legitimate developer
+   * content such as security errors, tokens, or vulnerability output.
+   */
+  public getSafetySettings():
+    | Array<{ category: string; threshold: string }>
+    | undefined {
+    const value = this.config.SAFETY_THRESHOLD;
+    if (!value) return undefined;
+    const threshold = value.toUpperCase(); // e.g. BLOCK_NONE, OFF
+    return [
+      'HARM_CATEGORY_HARASSMENT',
+      'HARM_CATEGORY_HATE_SPEECH',
+      'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+      'HARM_CATEGORY_DANGEROUS_CONTENT',
+    ].map(category => ({ category, threshold }));
+  }
+
+  /** Inference service tier ('priority' needs a Tier 2/3 paid project). */
+  public getServiceTier(): string | undefined {
+    return this.config.SERVICE_TIER;
+  }
+
+  /** HTTP timeout for Gemini API requests (default 5 minutes). */
+  public getGeminiTimeoutMs(): number {
+    return this.config.GEMINI_TIMEOUT_MS ?? 300000;
   }
 
   public getTopPForTask(taskType: 'image' | 'video'): number | undefined {

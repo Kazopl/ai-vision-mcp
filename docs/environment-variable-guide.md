@@ -95,6 +95,9 @@ The AI Vision MCP Server uses a hierarchical configuration system where more spe
 | `THINKING_LEVEL_FOR_VIDEO` | No | Overrides `THINKING_LEVEL` for videos | - |
 | `VIDEO_PROCESSING` | No | Video processing mode: `agentic` (model navigates the video on demand, up to ~97% fewer tokens on long videos) or `static` (fixed-rate frame ingestion). Requires Gemini 3.6+ or 3.5-flash-lite; `videoMetadata` forces static | `agentic` |
 | `AGENTIC_VISION` | No | Default for Agentic Vision on image analysis: the model runs sandboxed Python to zoom/crop/annotate the image itself (Gemini 3+). Per-call `agenticVision` option overrides | `false` |
+| `SAFETY_THRESHOLD` | No | Safety filter threshold for all harm categories: `off`, `block_none`, `block_only_high`, `block_medium_and_above`. `block_none` prevents spurious refusals on legitimate dev content (security errors, tokens, exploits) | API defaults |
+| `SERVICE_TIER` | No | Inference tier: `priority` (lowest latency, +75-100% price, needs Tier 2/3 paid project; auto-downgrades otherwise) or `flex` (50% cheaper, minutes-level latency) | `standard` |
+| `GEMINI_TIMEOUT_MS` | No | HTTP timeout for Gemini API requests (agentic loops can run minutes) | `300000` |
 | `INLINE_IMAGE_MAX_DIM` | No | Max dimension (px) of the inline annotated-image preview returned by detect/segment/extract tools; `0` disables inline images | `1200` |
 | `FFMPEG_PATH` | No | Path to the ffmpeg binary (used only by `extract_video_frame`) | `ffmpeg` on PATH |
 

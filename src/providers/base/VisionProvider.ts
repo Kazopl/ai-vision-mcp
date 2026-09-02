@@ -414,6 +414,21 @@ export abstract class BaseVisionProvider implements VisionProvider {
       );
     }
 
+    // Best-effort reproducibility across identical requests
+    if (options?.seed !== undefined) {
+      config.seed = options.seed;
+    }
+
+    // Safety threshold + service tier from env (applied to every request)
+    const safetySettings = this.configService.getSafetySettings();
+    if (safetySettings) {
+      config.safetySettings = safetySettings;
+    }
+    const serviceTier = this.configService.getServiceTier();
+    if (serviceTier && serviceTier !== 'standard') {
+      config.serviceTier = serviceTier;
+    }
+
     // Add structured output configuration if responseSchema is provided
     // Note: Use responseJsonSchema (not responseSchema) for better compatibility
     // with proxy endpoints like Bifrost. The Gemini REST API expects responseJsonSchema.

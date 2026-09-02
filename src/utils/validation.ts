@@ -123,6 +123,17 @@ export const ConfigSchema = z.object({
   // Agentic Vision default for image analysis (Gemini 3+)
   AGENTIC_VISION: z.enum(['true', 'false']).optional(),
 
+  // Safety filter threshold (applies to all harm categories)
+  SAFETY_THRESHOLD: z
+    .enum(['off', 'block_none', 'block_only_high', 'block_medium_and_above'])
+    .optional(),
+
+  // Inference service tier
+  SERVICE_TIER: z.enum(['standard', 'priority', 'flex']).optional(),
+
+  // HTTP timeout for Gemini API requests (ms)
+  GEMINI_TIMEOUT_MS: z.number().int().positive().optional(),
+
   // Function-specific API parameters
   TEMPERATURE_FOR_ANALYZE_IMAGE: z.number().min(0).max(2).optional(),
   TOP_P_FOR_ANALYZE_IMAGE: z.number().min(0).max(1).optional(),

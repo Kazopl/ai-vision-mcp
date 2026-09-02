@@ -79,6 +79,12 @@ export class VertexAIProvider extends BaseVisionProvider {
       );
     }
 
+    // Generous timeout: agentic vision/video runs multi-round server-side
+    // loops that can take minutes
+    clientConfig.httpOptions = {
+      timeout: this.configService.getGeminiTimeoutMs(),
+    };
+
     this.client = new GoogleGenAI(clientConfig);
 
     // Log debug information
@@ -555,6 +561,10 @@ export class VertexAIProvider extends BaseVisionProvider {
       const model = this.configService.getEditImageModel();
 
       const config: any = { responseModalities: ['TEXT', 'IMAGE'] };
+      const editSafetySettings = this.configService.getSafetySettings();
+      if (editSafetySettings) {
+        config.safetySettings = editSafetySettings;
+      }
       if (options?.aspectRatio || options?.imageSize) {
         config.imageConfig = {
           ...(options?.aspectRatio && { aspectRatio: options.aspectRatio }),

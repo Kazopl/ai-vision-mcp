@@ -56,7 +56,12 @@ export class GeminiProvider extends BaseVisionProvider {
     // Set global base URL before creating the client
     setDefaultBaseUrls({ geminiUrl: config.baseUrl });
 
-    this.client = new GoogleGenAI({ apiKey: config.apiKey });
+    this.client = new GoogleGenAI({
+      apiKey: config.apiKey,
+      // Generous timeout: agentic vision/video runs multi-round server-side
+      // loops that can take minutes
+      httpOptions: { timeout: this.configService.getGeminiTimeoutMs() },
+    });
     this.baseUrl = config.baseUrl;
   }
 
@@ -732,6 +737,10 @@ export class GeminiProvider extends BaseVisionProvider {
       // Sampling/thinking/mediaResolution settings from the analysis path do
       // not apply here.
       const config: any = { responseModalities: ['TEXT', 'IMAGE'] };
+      const safetySettings = this.configService.getSafetySettings();
+      if (safetySettings) {
+        config.safetySettings = safetySettings;
+      }
       if (options?.aspectRatio || options?.imageSize) {
         config.imageConfig = {
           ...(options?.aspectRatio && { aspectRatio: options.aspectRatio }),

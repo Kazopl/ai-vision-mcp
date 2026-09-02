@@ -57,6 +57,16 @@ export interface Config {
   // Agentic Vision default for image analysis (Gemini 3+): 'true' | 'false'
   AGENTIC_VISION?: string;
 
+  // Safety filter threshold applied to all harm categories:
+  // 'off' | 'block_none' | 'block_only_high' | 'block_medium_and_above'
+  SAFETY_THRESHOLD?: string;
+
+  // Inference service tier: 'standard' | 'priority' | 'flex'
+  SERVICE_TIER?: string;
+
+  // HTTP timeout for Gemini API requests in milliseconds
+  GEMINI_TIMEOUT_MS?: number;
+
   // Task-specific API parameters
   TEMPERATURE_FOR_IMAGE?: number;
   TOP_P_FOR_IMAGE?: number;

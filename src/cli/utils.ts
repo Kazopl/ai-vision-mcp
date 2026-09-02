@@ -19,6 +19,7 @@ export function parseOptions(options: Record<string, string>): {
   thinkingLevel?: ThinkingLevel;
   processing?: VideoProcessingMode;
   agenticVision?: boolean;
+  seed?: number;
 } {
   const result: {
     temperature?: number;
@@ -30,6 +31,7 @@ export function parseOptions(options: Record<string, string>): {
     thinkingLevel?: ThinkingLevel;
     processing?: VideoProcessingMode;
     agenticVision?: boolean;
+    seed?: number;
   } = {};
 
   if (options.temperature) {
@@ -96,6 +98,13 @@ export function parseOptions(options: Record<string, string>): {
 
   if ('agentic-vision' in options || options.agenticVision === 'true') {
     result.agenticVision = true;
+  }
+
+  if (options.seed !== undefined && options.seed !== '') {
+    const seed = parseInt(options.seed, 10);
+    if (!isNaN(seed)) {
+      result.seed = seed;
+    }
   }
 
   return result;
