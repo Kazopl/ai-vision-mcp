@@ -19,6 +19,7 @@ import {
   segment_objects_in_image,
   audit_design,
   extract_video_frame,
+  edit_image,
 } from './tools/index.js';
 import { VisionError } from './types/Errors.js';
 
@@ -807,6 +808,118 @@ server.registerTool<any, any>(
                 message: errorMessage,
                 tool: 'segment_objects_in_image',
               },
+              null,
+              2
+            ),
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Register edit_image tool
+server.registerTool<any, any>(
+  'edit_image',
+  {
+    title: 'Edit Image',
+    description:
+      'Edit, annotate, or compose images with Gemini native image generation (Nano Banana 2). Accepts 1-14 input images: pass one image to edit or write/draw on it ("add a red arrow pointing at the login button", "write APPROVED across the top"); pass two to highlight before/after differences ("mark every visual difference between image 1 and image 2 with red circles on image 2"); pass several to compose them. Annotated inputs work as spatial instructions (a box drawn on a reference copy tells the model where to act). Returns the edited image file plus an inline preview. Note: the model re-renders the whole image, so unedited areas are close but not pixel-identical.',
+    inputSchema: z.object({
+      imageSources: z
+        .array(z.string())
+        .min(1)
+        .max(14)
+        .describe(
+          'Input images (1-14) - URLs, base64 data URIs, or local file paths. Reference them in the prompt by order: "image 1", "image 2".'
+        ),
+      prompt: z
+        .string()
+        .describe(
+          'The edit instruction. Be specific about what to change and what to preserve, e.g. "Circle the diff in red and label it BUG; keep everything else unchanged."'
+        ),
+      outputFilePath: z
+        .string()
+        .optional()
+        .describe(
+          'Explicit output path for the edited image (extra outputs get -2, -3 suffixes). Defaults to a temp file.'
+        ),
+      aspectRatio: z
+        .enum([
+          '1:1',
+          '2:3',
+          '3:2',
+          '3:4',
+          '4:3',
+          '4:5',
+          '5:4',
+          '9:16',
+          '16:9',
+          '21:9',
+          '9:21',
+          '1:4',
+          '4:1',
+          '1:8',
+          '8:1',
+        ])
+        .optional()
+        .describe(
+          'Output aspect ratio. Defaults to matching the input image.'
+        ),
+      imageSize: z
+        .enum(['512', '1K', '2K', '4K'])
+        .optional()
+        .describe('Output resolution (default 1K). Use 2K/4K for fine text.'),
+    }),
+  },
+  async (args: any, _extra: any) => {
+    const { imageSources, prompt, outputFilePath, aspectRatio, imageSize } =
+      args;
+    try {
+      const { config, imageProvider } = getServices();
+
+      const result = await edit_image(
+        { imageSources, prompt, outputFilePath, aspectRatio, imageSize },
+        config,
+        imageProvider
+      );
+
+      const inlineImage = result.images[0]
+        ? await buildInlineImageBlock(result.images[0].path)
+        : null;
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+          ...(inlineImage ? [inlineImage] : []),
+        ],
+      };
+    } catch (error) {
+      void logger.error(
+        { msg: 'Error executing edit_image tool', error: String(error) },
+        'tools/edit_image'
+      );
+
+      let errorMessage = 'An unknown error occurred';
+      if (error instanceof VisionError) {
+        errorMessage = `${error.name}: ${error.message}`;
+        if (error.provider) {
+          errorMessage += ` (Provider: ${error.provider})`;
+        }
+      } else if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              { error: true, message: errorMessage, tool: 'edit_image' },
               null,
               2
             ),

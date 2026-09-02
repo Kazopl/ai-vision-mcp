@@ -81,6 +81,7 @@ The AI Vision MCP Server uses a hierarchical configuration system where more spe
 | `SEGMENT_OBJECTS_IN_IMAGE_MODEL` | No | Model for segment_objects_in_image function | Uses `IMAGE_MODEL` |
 | `ANALYZE_VIDEO_MODEL` | No | Model for analyze_video function | Uses `VIDEO_MODEL` |
 | `ANALYZE_AUDIO_MODEL` | No | Model for analyze_audio function | Uses `VIDEO_MODEL` |
+| `EDIT_IMAGE_MODEL` | No | Model for edit_image (must be a Nano Banana image model; does not fall back to `IMAGE_MODEL`) | `gemini-3.1-flash-image` |
 
 ### Media Resolution & Thinking Level (Gemini 3+)
 

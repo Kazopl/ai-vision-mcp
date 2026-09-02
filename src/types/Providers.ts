@@ -42,6 +42,12 @@ export interface VisionProvider {
     prompt: string,
     options?: AnalysisOptions
   ): Promise<AnalysisResult>;
+  /** Optional: image editing/generation via Nano Banana image models */
+  editImage?(
+    inputs: import('./ImageEdit.js').EditImageInput[],
+    prompt: string,
+    options?: import('./ImageEdit.js').EditImageOptions
+  ): Promise<import('./ImageEdit.js').EditImageResult>;
   compareImages(
     imageSources: string[],
     prompt: string,

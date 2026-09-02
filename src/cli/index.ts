@@ -8,6 +8,7 @@ import { runAnalyzeVideo } from './commands/analyze-video.js';
 import { runAnalyzeAudio } from './commands/analyze-audio.js';
 import { runAuditDesign } from './commands/audit-design.js';
 import { runExtractFrame } from './commands/extract-frame.js';
+import { runEditImage } from './commands/edit-image.js';
 
 export async function runCli(args: string[]): Promise<void> {
   const command = args[0];
@@ -42,6 +43,9 @@ export async function runCli(args: string[]): Promise<void> {
     case 'extract-frame':
       await runExtractFrame(commandArgs);
       break;
+    case 'edit-image':
+      await runEditImage(commandArgs, config);
+      break;
     case 'help':
     case '--help':
     case '-h':
@@ -69,6 +73,7 @@ Commands:
   analyze-audio <source>       Analyze audio (transcribe, summarize, identify speakers)
   audit-design <source>        Audit design compliance (pixel metrics + Gemini critique)
   extract-frame <source>       Extract video frames via ffmpeg (local, no AI call)
+  edit-image <sources...>      Edit/annotate/compose images (Nano Banana, 1-14 inputs)
 
 Global Options:
   --prompt <text>              The analysis prompt (required for some commands)

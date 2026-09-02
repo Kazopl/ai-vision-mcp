@@ -243,7 +243,7 @@ npx ai-vision-mcp
 
 ## MCP Tools
 
-The server provides eight MCP tools:
+The server provides nine MCP tools:
 
 ### 1) `analyze_image`
 
@@ -477,7 +477,26 @@ Verified on a 1080p screencast with 10px text: video-level analysis at `high` re
 { "videoSource": "/path/to/demo.mp4", "sceneDetect": true, "maxFrames": 10 }
 ```
 
-### 7) `analyze_audio`
+### 7) `edit_image`
+
+Edits, annotates, or composes images using Gemini native image generation (Nano Banana 2, `gemini-3.1-flash-image` by default via `EDIT_IMAGE_MODEL`). Accepts 1-14 input images and returns the edited image (file + inline preview).
+
+**Typical uses:**
+- Write or draw on an image: "Add a red arrow pointing at the Save button and write 'CLICK HERE'"
+- Before/after diffing: pass 2 images and ask "mark every visual difference between image 1 and image 2 with red boxes and labels"
+- Composition: pass several images and ask for a combined result
+- Spatial control: pass the original plus an annotated copy - boxes/arrows drawn on the reference act as placement instructions
+
+**Parameters:**
+- `imageSources` (array, 1-14): URLs, base64 data URIs, or local file paths (oversized inputs are auto-downscaled to fit the 7MB inline cap)
+- `prompt` (string): the edit instruction; reference inputs as "image 1", "image 2"
+- `outputFilePath` (string, optional): where to save (extra outputs get `-2`, `-3` suffixes)
+- `aspectRatio` (optional): defaults to the input image's ratio
+- `imageSize` (optional): `512`, `1K` (default), `2K`, `4K`
+
+**Note:** generative editing re-renders the whole image - unedited regions stay close but are not pixel-identical. For pixel-exact box overlays use `detect_objects_in_image` / `segment_objects_in_image` instead.
+
+### 8) `analyze_audio`
 
 Analyzes audio files using Gemini's native audio understanding: transcription (ask for MM:SS timestamps), summarization, speaker identification, and non-speech sound description. Audio costs ~32 tokens/second, so about an hour fits comfortably in context.
 
@@ -488,7 +507,7 @@ Analyzes audio files using Gemini's native audio understanding: transcription (a
 
 Files up to 18MB are sent inline; larger files upload via the Files API automatically (Gemini provider) or need a `gs://` URI (Vertex AI).
 
-### 8) `analyze_video`
+### 9) `analyze_video`
 
 **Agentic video understanding (default).** On supported models (Gemini 3.6+, 3.5-flash-lite) the model navigates the video on demand - searching the transcript and fetching only the frames it needs - instead of statically ingesting every frame. Measured on a 45s video: 40 prompt tokens agentic vs 13,573 static, with the same answer quality; Google reports up to 66% cost reduction and better accuracy on long videos. Control it with the `processing` option (`agentic`/`static`) or the `VIDEO_PROCESSING` env var. Using `videoMetadata` (clipping/fps) automatically switches the request to static, since the API does not allow combining them; unsupported models also fall back to static.
 

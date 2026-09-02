@@ -55,6 +55,11 @@ export class ConfigService {
   // video understanding (which 3.1-flash-lite lacks).
   private static readonly DEFAULT_IMAGE_MODEL = 'gemini-3.5-flash-lite';
   private static readonly DEFAULT_VIDEO_MODEL = 'gemini-3.5-flash-lite';
+  // Image EDITING uses the Nano Banana family; analysis models like
+  // gemini-3.8-flash cannot generate images, so this never falls back to
+  // IMAGE_MODEL. gemini-3.1-flash-image = Nano Banana 2, GA, stable to
+  // May 2027+.
+  private static readonly DEFAULT_EDIT_IMAGE_MODEL = 'gemini-3.1-flash-image';
   private config: Config;
   private loggedSummary = false;
   private logger = LoggerService.getInstance('ai-vision-mcp');
@@ -174,6 +179,7 @@ export class ConfigService {
           process.env.SEGMENT_OBJECTS_IN_IMAGE_MODEL,
         ANALYZE_VIDEO_MODEL: process.env.ANALYZE_VIDEO_MODEL,
         ANALYZE_AUDIO_MODEL: process.env.ANALYZE_AUDIO_MODEL,
+        EDIT_IMAGE_MODEL: process.env.EDIT_IMAGE_MODEL,
 
         // Google Cloud Storage configuration (uses Vertex AI credentials)
         GCS_BUCKET_NAME: process.env.GCS_BUCKET_NAME,
@@ -876,6 +882,13 @@ export class ConfigService {
 
   public static getDefaultVideoModel(): string {
     return ConfigService.DEFAULT_VIDEO_MODEL;
+  }
+
+  /** Model for image editing: EDIT_IMAGE_MODEL env or the Nano Banana default. */
+  public getEditImageModel(): string {
+    return (
+      this.config.EDIT_IMAGE_MODEL ?? ConfigService.DEFAULT_EDIT_IMAGE_MODEL
+    );
   }
 
   public getMaxImagesForComparison(): number {

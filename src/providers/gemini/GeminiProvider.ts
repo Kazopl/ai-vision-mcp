@@ -35,6 +35,11 @@ import {
   loadAudioSource,
   AUDIO_INLINE_THRESHOLD,
 } from '../../utils/audioSourceHandler.js';
+import type {
+  EditImageInput,
+  EditImageOptions,
+  EditImageResult,
+} from '../../types/ImageEdit.js';
 
 export class GeminiProvider extends BaseVisionProvider {
   private client: GoogleGenAI;
@@ -712,6 +717,78 @@ export class GeminiProvider extends BaseVisionProvider {
       );
     } catch (error) {
       throw this.handleError(error, 'audio analysis');
+    }
+  }
+
+  async editImage(
+    inputs: EditImageInput[],
+    prompt: string,
+    options?: EditImageOptions
+  ): Promise<EditImageResult> {
+    try {
+      const model = this.configService.getEditImageModel();
+
+      // Image models use a dedicated config: responseModalities + imageConfig.
+      // Sampling/thinking/mediaResolution settings from the analysis path do
+      // not apply here.
+      const config: any = { responseModalities: ['TEXT', 'IMAGE'] };
+      if (options?.aspectRatio || options?.imageSize) {
+        config.imageConfig = {
+          ...(options?.aspectRatio && { aspectRatio: options.aspectRatio }),
+          ...(options?.imageSize && { imageSize: options.imageSize }),
+        };
+      }
+
+      const parts: any[] = inputs.map(input => ({
+        inlineData: { mimeType: input.mimeType, data: input.data },
+      }));
+      parts.push({ text: prompt });
+
+      const { result: response, duration } = await this.measureAsync(
+        async () => {
+          return await this.client.models.generateContent({
+            model,
+            contents: [{ role: 'user', parts }],
+            config,
+          });
+        }
+      );
+
+      const outParts = response.candidates?.[0]?.content?.parts ?? [];
+      const images: EditImageResult['images'] = [];
+      const textChunks: string[] = [];
+      for (const part of outParts as any[]) {
+        if (part.inlineData?.data) {
+          images.push({
+            data: Buffer.from(part.inlineData.data, 'base64'),
+            mimeType: part.inlineData.mimeType || 'image/png',
+          });
+        } else if (part.text) {
+          textChunks.push(part.text);
+        }
+      }
+
+      const usage = response.usageMetadata;
+      return {
+        images,
+        text: textChunks.join('\n').trim(),
+        metadata: {
+          model,
+          provider: this.providerName,
+          usage: usage
+            ? {
+              promptTokenCount: usage.promptTokenCount || 0,
+              candidatesTokenCount: usage.candidatesTokenCount || 0,
+              totalTokenCount: usage.totalTokenCount || 0,
+            }
+            : undefined,
+          processingTime: duration,
+          modelVersion: response.modelVersion,
+          responseId: response.responseId,
+        },
+      };
+    } catch (error) {
+      throw this.handleError(error, 'image editing');
     }
   }
 

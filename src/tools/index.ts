@@ -25,3 +25,4 @@ export {
   type ExtractVideoFrameResponse,
 } from './extract_video_frame.js';
 export { analyze_audio, type AnalyzeAudioArgs } from './analyze_audio.js';
+export { edit_image, type EditImageArgs } from './edit_image.js';

@@ -29,6 +29,7 @@ export interface Config {
   SEGMENT_OBJECTS_IN_IMAGE_MODEL?: string;
   ANALYZE_VIDEO_MODEL?: string;
   ANALYZE_AUDIO_MODEL?: string;
+  EDIT_IMAGE_MODEL?: string;
 
   // Google Cloud Storage configuration (for Vertex AI file storage)
   // Uses VERTEX_CLIENT_EMAIL, VERTEX_PRIVATE_KEY, VERTEX_PROJECT_ID for auth
