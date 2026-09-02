@@ -34,7 +34,16 @@ export interface AnalysisOptions {
   videoMetadata?: VideoMetadata; // Video clipping and frame rate settings
   mediaResolution?: MediaResolutionLevel; // Token resolution for input media (Gemini 3+)
   thinkingLevel?: ThinkingLevel; // Reasoning depth (Gemini 3+)
+  processing?: VideoProcessingMode; // Video processing mode (Gemini 3.6+, 3.5-flash-lite)
 }
+
+/**
+ * Video processing mode. 'agentic' (default on supported models) lets the
+ * model navigate the video on demand - transcript search plus targeted frame
+ * fetches - massively reducing tokens on long videos. 'static' ingests
+ * frames at a fixed rate and is required for videoMetadata (clipping/fps).
+ */
+export type VideoProcessingMode = 'agentic' | 'static';
 
 /**
  * Media resolution for input media tokenization (Gemini 3+ models).

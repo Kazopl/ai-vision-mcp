@@ -482,6 +482,15 @@ export class VertexAIProvider extends BaseVisionProvider {
         videoPart.mediaResolution = videoPartResolution;
       }
 
+      // Agentic video understanding (default on supported models)
+      const videoProcessing = this.getVideoPartProcessing(
+        this.resolveModelForFunction('video', options?.functionName),
+        options
+      );
+      if (videoProcessing) {
+        videoPart.mediaProcessing = videoProcessing;
+      }
+
       const { result: response, duration: analysisDuration } =
         await this.measureAsync(async () => {
           return await this.client.models.generateContent({

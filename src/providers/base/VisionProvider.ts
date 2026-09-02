@@ -17,6 +17,24 @@ import { type FunctionName } from '../../constants/FunctionNames.js';
 import { ConfigService } from '../../services/ConfigService.js';
 import { LoggerService } from '../../services/LoggerService.js';
 
+/**
+ * Parse the numeric generation from a Gemini model id, e.g.
+ * "gemini-3.8-flash" -> 3.8, "gemini-3-flash-preview" -> 3.0.
+ * Returns null for non-Gemini models (e.g. gemma).
+ */
+export function getGeminiVersion(model: string): number | null {
+  const match = model.match(/gemini-(\d+)(?:\.(\d+))?/);
+  if (!match) return null;
+  return parseFloat(`${match[1]}.${match[2] ?? '0'}`);
+}
+
+/** Models that support agentic video understanding (launched Sept 2026). */
+export function supportsAgenticVideo(model: string): boolean {
+  const version = getGeminiVersion(model);
+  if (version !== null && version >= 3.6) return true;
+  return model.includes('gemini-3.5-flash-lite');
+}
+
 export abstract class BaseVisionProvider implements VisionProvider {
   protected imageModel: string;
   protected videoModel: string;
@@ -362,21 +380,39 @@ export abstract class BaseVisionProvider implements VisionProvider {
     functionName: FunctionName | undefined,
     options?: AnalysisOptions
   ): any {
+    const model = this.resolveModelForFunction(taskType, functionName);
+    const geminiVersion = getGeminiVersion(model);
+
     const config: any = {
-      temperature: this.resolveTemperatureForFunction(
-        taskType,
-        functionName,
-        options?.temperature
-      ),
-      topP: this.resolveTopPForFunction(taskType, functionName, options?.topP),
-      topK: this.resolveTopKForFunction(taskType, functionName, options?.topK),
       maxOutputTokens: this.resolveMaxTokensForFunction(
         taskType,
         functionName,
         options?.maxTokens
       ),
-      candidateCount: 1,
     };
+
+    // Sampling parameters are deprecated for Gemini 3.x and ignored by the
+    // backend from 3.6+ (Google's migration guides say to remove them; the
+    // model manages its own sampling). candidateCount is likewise deprecated
+    // and is never sent (1 is the API default anyway). For models before 3.6
+    // the parameters still apply, so keep sending them there.
+    if (geminiVersion === null || geminiVersion < 3.6) {
+      config.temperature = this.resolveTemperatureForFunction(
+        taskType,
+        functionName,
+        options?.temperature
+      );
+      config.topP = this.resolveTopPForFunction(
+        taskType,
+        functionName,
+        options?.topP
+      );
+      config.topK = this.resolveTopKForFunction(
+        taskType,
+        functionName,
+        options?.topK
+      );
+    }
 
     // Add structured output configuration if responseSchema is provided
     // Note: Use responseJsonSchema (not responseSchema) for better compatibility
@@ -421,7 +457,6 @@ export abstract class BaseVisionProvider implements VisionProvider {
 
     // Add thinking configuration for Gemini models
     // Supports both Gemini 2.5 (thinkingBudget) and Gemini 3+ (thinkingLevel)
-    const model = this.resolveModelForFunction(taskType, functionName);
     // An explicit thinking level (runtime option, then THINKING_LEVEL[_FOR_*]
     // env vars) wins on Gemini 3+ models. Gemini 2.5 and older only accept
     // thinkingBudget, so they keep the built-in defaults.
@@ -429,9 +464,16 @@ export abstract class BaseVisionProvider implements VisionProvider {
       options?.thinkingLevel ??
       this.configService.getThinkingLevelForTask(taskType);
     if (requestedThinkingLevel && model.includes('gemini-3')) {
-      config.thinkingConfig = {
-        thinkingLevel: requestedThinkingLevel.toUpperCase(),
-      };
+      let level = requestedThinkingLevel.toUpperCase();
+      // Gemini 3.7+ rejects MINIMAL ("Thinking level MINIMAL is not
+      // supported for this model"); LOW is the closest supported level.
+      if (level === 'MINIMAL' && geminiVersion !== null && geminiVersion >= 3.7) {
+        console.error(
+          `[VisionProvider] thinkingLevel "minimal" is not supported by ${model}; using "low" instead`
+        );
+        level = 'LOW';
+      }
+      config.thinkingConfig = { thinkingLevel: level };
     } else {
       const thinkingConfig = this.getThinkingConfig(model);
       if (thinkingConfig) {
@@ -448,6 +490,44 @@ export abstract class BaseVisionProvider implements VisionProvider {
     }
 
     return config;
+  }
+
+  /**
+   * Agentic video understanding (Gemini 3.6+, 3.5-flash-lite): the model
+   * navigates the video on demand (transcript search + targeted frame
+   * fetches) instead of ingesting every frame, cutting tokens by up to ~97%
+   * on long videos. Returned value goes on the video Part's mediaProcessing.
+   *
+   * Enabled by default (VIDEO_PROCESSING env or per-call options.processing
+   * override). Falls back to static when:
+   * - videoMetadata (clipping/fps) is present - the API rejects the combo
+   * - the model doesn't support agentic processing
+   */
+  protected getVideoPartProcessing(
+    model: string,
+    options?: AnalysisOptions
+  ): 'AGENTIC' | undefined {
+    const requested =
+      options?.processing ?? this.configService.getVideoProcessing();
+    if (requested !== 'agentic') {
+      return undefined;
+    }
+
+    if (options?.videoMetadata) {
+      console.error(
+        '[VisionProvider] videoMetadata (clipping/fps) requires static processing; agentic mode disabled for this request'
+      );
+      return undefined;
+    }
+
+    if (!supportsAgenticVideo(model)) {
+      console.error(
+        `[VisionProvider] ${model} does not support agentic video processing; using static`
+      );
+      return undefined;
+    }
+
+    return 'AGENTIC';
   }
 
   /**

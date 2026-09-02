@@ -6,6 +6,7 @@ import type {
   VideoMetadata,
   MediaResolutionLevel,
   ThinkingLevel,
+  VideoProcessingMode,
 } from '../types/Analysis.js';
 
 export function parseOptions(options: Record<string, string>): {
@@ -16,6 +17,7 @@ export function parseOptions(options: Record<string, string>): {
   videoMetadata?: VideoMetadata;
   mediaResolution?: MediaResolutionLevel;
   thinkingLevel?: ThinkingLevel;
+  processing?: VideoProcessingMode;
 } {
   const result: {
     temperature?: number;
@@ -25,6 +27,7 @@ export function parseOptions(options: Record<string, string>): {
     videoMetadata?: VideoMetadata;
     mediaResolution?: MediaResolutionLevel;
     thinkingLevel?: ThinkingLevel;
+    processing?: VideoProcessingMode;
   } = {};
 
   if (options.temperature) {
@@ -82,6 +85,11 @@ export function parseOptions(options: Record<string, string>): {
     thinkingLevel === 'high'
   ) {
     result.thinkingLevel = thinkingLevel;
+  }
+
+  const processing = options.processing;
+  if (processing === 'agentic' || processing === 'static') {
+    result.processing = processing;
   }
 
   return result;

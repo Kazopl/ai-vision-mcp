@@ -39,6 +39,8 @@ For Vertex AI setup, see [Vertex AI Setup Guide](provider/vertex-ai-setup-guide.
 
 The AI Vision MCP Server uses a hierarchical configuration system where more specific settings override general ones.
 
+> Note: `temperature`, `topP`, and `topK` are deprecated across Gemini 3.x and ignored by the backend from 3.6 onward, so this server only sends them to models older than 3.6. On newer models control determinism with `thinkingLevel` and structured outputs instead. `candidateCount` is never sent.
+
 ### AI Parameters Priority (Highest to Lowest)
 
 1. **LLM-assigned values** - Parameters passed directly in tool calls (e.g., `{"temperature": 0.1}`)
@@ -51,7 +53,7 @@ The AI Vision MCP Server uses a hierarchical configuration system where more spe
 
 1. **Function-specific models** - `ANALYZE_IMAGE_MODEL`, `COMPARE_IMAGES_MODEL`, `ANALYZE_VIDEO_MODEL`
 2. **Task-specific models** - `IMAGE_MODEL`, `VIDEO_MODEL`
-3. **System defaults** - Built-in fallback model (`gemini-3.1-flash-lite`)
+3. **System defaults** - Built-in fallback model (`gemini-3.5-flash-lite`)
 
 ## Environment Variables Reference
 
@@ -66,8 +68,8 @@ The AI Vision MCP Server uses a hierarchical configuration system where more spe
 
 | Variable | Required | Description | Default |
 |----------|-----------|-------------|---------|
-| `IMAGE_MODEL` | No | Model for image analysis | `gemini-3.1-flash-lite` |
-| `VIDEO_MODEL` | No | Model for video analysis | `gemini-3.1-flash-lite` |
+| `IMAGE_MODEL` | No | Model for image analysis | `gemini-3.5-flash-lite` |
+| `VIDEO_MODEL` | No | Model for video analysis | `gemini-3.5-flash-lite` |
 
 ### Function-specific Model Selection
 
@@ -89,6 +91,7 @@ The AI Vision MCP Server uses a hierarchical configuration system where more spe
 | `THINKING_LEVEL` | No | Reasoning depth: `minimal`, `low`, `medium`, `high` | Model default (`medium` for gemini-3.5-flash, `minimal` for gemini-3.1-flash-lite) |
 | `THINKING_LEVEL_FOR_IMAGE` | No | Overrides `THINKING_LEVEL` for images | - |
 | `THINKING_LEVEL_FOR_VIDEO` | No | Overrides `THINKING_LEVEL` for videos | - |
+| `VIDEO_PROCESSING` | No | Video processing mode: `agentic` (model navigates the video on demand, up to ~97% fewer tokens on long videos) or `static` (fixed-rate frame ingestion). Requires Gemini 3.6+ or 3.5-flash-lite; `videoMetadata` forces static | `agentic` |
 | `INLINE_IMAGE_MAX_DIM` | No | Max dimension (px) of the inline annotated-image preview returned by detect/segment/extract tools; `0` disables inline images | `1200` |
 | `FFMPEG_PATH` | No | Path to the ffmpeg binary (used only by `extract_video_frame`) | `ffmpeg` on PATH |
 
@@ -252,8 +255,8 @@ export VERTEX_PROJECT_ID="your-project-id"
 export GCS_BUCKET_NAME="your-production-bucket"
 
 # Production models
-export IMAGE_MODEL="gemini-3.5-flash"
-export VIDEO_MODEL="gemini-3.5-flash"
+export IMAGE_MODEL="gemini-3.8-flash"
+export VIDEO_MODEL="gemini-3.8-flash"
 
 # Production parameters
 export TEMPERATURE=0.3
@@ -278,9 +281,9 @@ export MAX_TOKENS_FOR_DETECT_OBJECTS_IN_IMAGE=8192   # High token limit for JSON
 export MAX_TOKENS_FOR_AUDIT_DESIGN=1500       # Detailed design critique
 
 # Function-specific models
-export ANALYZE_IMAGE_MODEL="gemini-3.1-flash-lite"
-export COMPARE_IMAGES_MODEL="gemini-3.5-flash"
-export DETECT_OBJECTS_IN_IMAGE_MODEL="gemini-3.1-flash-lite"
+export ANALYZE_IMAGE_MODEL="gemini-3.5-flash-lite"
+export COMPARE_IMAGES_MODEL="gemini-3.8-flash"
+export DETECT_OBJECTS_IN_IMAGE_MODEL="gemini-3.5-flash-lite"
 ```
 
 ### Mixed Provider Setup

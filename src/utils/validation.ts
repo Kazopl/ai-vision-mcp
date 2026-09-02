@@ -115,6 +115,9 @@ export const ConfigSchema = z.object({
     .enum(['minimal', 'low', 'medium', 'high'])
     .optional(),
 
+  // Video processing mode (Gemini 3.6+, 3.5-flash-lite)
+  VIDEO_PROCESSING: z.enum(['agentic', 'static']).optional(),
+
   // Function-specific API parameters
   TEMPERATURE_FOR_ANALYZE_IMAGE: z.number().min(0).max(2).optional(),
   TOP_P_FOR_ANALYZE_IMAGE: z.number().min(0).max(1).optional(),

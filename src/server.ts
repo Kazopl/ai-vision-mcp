@@ -1010,7 +1010,13 @@ server.registerTool<any, any>(
             .enum(['minimal', 'low', 'medium', 'high'])
             .optional()
             .describe(
-              'Reasoning depth (Gemini 3+ models only). Use "high" for hard visual reasoning or precise OCR of on-screen text; "minimal"/"low" for fast scene summaries. Thinking tokens count toward maxTokens, so pair "high" with maxTokens >= 4000 or the answer gets truncated.'
+              'Reasoning depth (Gemini 3+ models only). Use "high" for hard visual reasoning or precise OCR of on-screen text; "minimal"/"low" for fast scene summaries. Thinking tokens count toward maxTokens, so pair "high" with maxTokens >= 4000 or the answer gets truncated. Gemini 3.7+ does not support "minimal" (auto-upgraded to "low").'
+            ),
+          processing: z
+            .enum(['agentic', 'static'])
+            .optional()
+            .describe(
+              'Video processing mode (Gemini 3.6+/3.5-flash-lite). "agentic" (default) lets the model navigate the video on demand - transcript search plus targeted frame fetches - cutting tokens by up to ~97% on long videos with equal or better accuracy; ideal for long content and moment retrieval. "static" ingests frames at a fixed rate; required when using videoMetadata (clipping/fps) and preferred for exhaustive frame-precise inspection of short clips. videoMetadata automatically forces static.'
             ),
         })
         .optional(),

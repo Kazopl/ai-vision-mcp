@@ -49,6 +49,9 @@ export interface Config {
   THINKING_LEVEL_FOR_IMAGE?: string;
   THINKING_LEVEL_FOR_VIDEO?: string;
 
+  // Video processing mode (Gemini 3.6+, 3.5-flash-lite): 'agentic' | 'static'
+  VIDEO_PROCESSING?: string;
+
   // Task-specific API parameters
   TEMPERATURE_FOR_IMAGE?: number;
   TOP_P_FOR_IMAGE?: number;

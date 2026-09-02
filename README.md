@@ -479,6 +479,8 @@ Verified on a 1080p screencast with 10px text: video-level analysis at `high` re
 
 ### 7) `analyze_video`
 
+**Agentic video understanding (default).** On supported models (Gemini 3.6+, 3.5-flash-lite) the model navigates the video on demand - searching the transcript and fetching only the frames it needs - instead of statically ingesting every frame. Measured on a 45s video: 40 prompt tokens agentic vs 13,573 static, with the same answer quality; Google reports up to 66% cost reduction and better accuracy on long videos. Control it with the `processing` option (`agentic`/`static`) or the `VIDEO_PROCESSING` env var. Using `videoMetadata` (clipping/fps) automatically switches the request to static, since the API does not allow combining them; unsupported models also fall back to static.
+
 Analyzes a video using AI and returns a detailed description.
 
 **Parameters:**
@@ -581,10 +583,10 @@ export MAX_TOKENS_FOR_DETECT_OBJECTS_IN_IMAGE=8192   # High token limit
 
 **Model Selection:**
 ```bash
-# Choose models per function (default: gemini-3.1-flash-lite)
-export ANALYZE_IMAGE_MODEL="gemini-3.1-flash-lite"
-export COMPARE_IMAGES_MODEL="gemini-3.5-flash"
-export ANALYZE_VIDEO_MODEL="gemini-3.5-flash"
+# Choose models per function (default: gemini-3.5-flash-lite)
+export ANALYZE_IMAGE_MODEL="gemini-3.5-flash-lite"
+export COMPARE_IMAGES_MODEL="gemini-3.8-flash"
+export ANALYZE_VIDEO_MODEL="gemini-3.8-flash"
 ```
 
 **Gemini 3+ Media Resolution & Thinking Level:**

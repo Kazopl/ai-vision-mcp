@@ -50,10 +50,11 @@ if (envPath) {
 
 export class ConfigService {
   private static instance: ConfigService;
-  // gemini-3.1-flash-lite-preview was shut down on May 25, 2026; the stable
-  // gemini-3.1-flash-lite is its long-term replacement.
-  private static readonly DEFAULT_IMAGE_MODEL = 'gemini-3.1-flash-lite';
-  private static readonly DEFAULT_VIDEO_MODEL = 'gemini-3.1-flash-lite';
+  // gemini-3.5-flash-lite (July 2026): the current stable lite model,
+  // supported until at least July 2027 and one of the models with agentic
+  // video understanding (which 3.1-flash-lite lacks).
+  private static readonly DEFAULT_IMAGE_MODEL = 'gemini-3.5-flash-lite';
+  private static readonly DEFAULT_VIDEO_MODEL = 'gemini-3.5-flash-lite';
   private config: Config;
   private loggedSummary = false;
   private logger = LoggerService.getInstance('ai-vision-mcp');
@@ -195,6 +196,9 @@ export class ConfigService {
         THINKING_LEVEL: process.env.THINKING_LEVEL,
         THINKING_LEVEL_FOR_IMAGE: process.env.THINKING_LEVEL_FOR_IMAGE,
         THINKING_LEVEL_FOR_VIDEO: process.env.THINKING_LEVEL_FOR_VIDEO,
+
+        // Video processing mode (Gemini 3.6+, 3.5-flash-lite)
+        VIDEO_PROCESSING: process.env.VIDEO_PROCESSING,
 
         // Task-specific API parameters
         TEMPERATURE_FOR_IMAGE: process.env.TEMPERATURE_FOR_IMAGE
@@ -604,6 +608,15 @@ export class ConfigService {
         ? this.config.THINKING_LEVEL_FOR_IMAGE
         : this.config.THINKING_LEVEL_FOR_VIDEO;
     return taskSpecific ?? this.config.THINKING_LEVEL;
+  }
+
+  /**
+   * Video processing mode. Agentic video understanding is the default:
+   * on supported models it cuts tokens massively and improves accuracy on
+   * long videos (set VIDEO_PROCESSING=static to opt out globally).
+   */
+  public getVideoProcessing(): 'agentic' | 'static' {
+    return this.config.VIDEO_PROCESSING === 'static' ? 'static' : 'agentic';
   }
 
   public getTopPForTask(taskType: 'image' | 'video'): number | undefined {

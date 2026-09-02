@@ -512,6 +512,16 @@ export class GeminiProvider extends BaseVisionProvider {
         content.mediaResolution = partMediaResolution;
       }
 
+      // Agentic video understanding (default on supported models): the model
+      // navigates the video on demand instead of ingesting every frame.
+      const videoProcessing = this.getVideoPartProcessing(
+        this.resolveModelForFunction('video', options?.functionName),
+        options
+      );
+      if (videoProcessing) {
+        content.mediaProcessing = videoProcessing;
+      }
+
       const { result: response, duration: analysisDuration } =
         await this.measureAsync(async () => {
           return await this.client.models.generateContent({
