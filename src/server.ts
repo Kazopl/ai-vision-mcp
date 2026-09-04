@@ -22,6 +22,7 @@ import {
   edit_image,
 } from './tools/index.js';
 import { VisionError } from './types/Errors.js';
+import { startJob, getJob } from './utils/jobStore.js';
 
 import { LoggerService } from './services/LoggerService.js';
 
@@ -201,6 +202,50 @@ async function buildInlineImageBlock(
   }
 }
 
+/**
+ * Keep long tool calls alive on clients that honor MCP progress
+ * notifications: while fn runs, emit notifications/progress every 8s using
+ * the client's progressToken (spec: clients MAY reset their timeout on
+ * each one). Clients with hard timeouts that ignore progress (older
+ * TypeScript SDK builds) should use start_video_analysis +
+ * get_analysis_result instead.
+ */
+async function withProgressHeartbeat<T>(
+  extra: any,
+  label: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const progressToken = extra?._meta?.progressToken;
+  if (progressToken === undefined || !extra?.sendNotification) {
+    return fn();
+  }
+
+  const startedAt = Date.now();
+  let tick = 0;
+  const timer = setInterval(() => {
+    tick++;
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+    Promise.resolve(
+      extra.sendNotification({
+        method: 'notifications/progress',
+        params: {
+          progressToken,
+          progress: tick,
+          message: `${label}... ${elapsed}s elapsed`,
+        },
+      })
+    ).catch(() => {
+      // Never let heartbeat failures affect the tool call
+    });
+  }, 8000);
+
+  try {
+    return await fn();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
 // Register analyze_image tool
 server.registerTool<any, any>(
   'analyze_image',
@@ -350,11 +395,8 @@ server.registerTool<any, any>(
       // Initialize services on-demand (only after validation passes)
       const { config, imageProvider, imageFileService } = getServices();
 
-      const result = await analyze_image(
-        validatedArgs,
-        config,
-        imageProvider,
-        imageFileService
+      const result = await withProgressHeartbeat(_extra, 'Analyzing image', () =>
+        analyze_image(validatedArgs, config, imageProvider, imageFileService)
       );
 
       return {
@@ -529,11 +571,8 @@ server.registerTool<any, any>(
 
       const validatedArgs = { imageSources, prompt, options };
 
-      const result = await compare_images(
-        validatedArgs,
-        config,
-        imageProvider,
-        imageFileService
+      const result = await withProgressHeartbeat(_extra, 'Comparing images', () =>
+        compare_images(validatedArgs, config, imageProvider, imageFileService)
       );
 
       return {
@@ -640,11 +679,8 @@ server.registerTool<any, any>(
       // Initialize services on-demand
       const { config, imageProvider, imageFileService } = getServices();
 
-      const result = await detect_objects_in_image(
-        validatedArgs,
-        config,
-        imageProvider,
-        imageFileService
+      const result = await withProgressHeartbeat(_extra, 'Detecting objects', () =>
+        detect_objects_in_image(validatedArgs, config, imageProvider, imageFileService)
       );
 
       // Handle different response types; when an annotated image was saved,
@@ -751,11 +787,8 @@ server.registerTool<any, any>(
       // Initialize services on-demand
       const { config, imageProvider, imageFileService } = getServices();
 
-      const result = await segment_objects_in_image(
-        validatedArgs,
-        config,
-        imageProvider,
-        imageFileService
+      const result = await withProgressHeartbeat(_extra, 'Segmenting objects', () =>
+        segment_objects_in_image(validatedArgs, config, imageProvider, imageFileService)
       );
 
       const annotatedPath =
@@ -886,10 +919,8 @@ server.registerTool<any, any>(
     try {
       const { config, imageProvider } = getServices();
 
-      const result = await edit_image(
-        { imageSources, prompt, outputFilePath, aspectRatio, imageSize },
-        config,
-        imageProvider
+      const result = await withProgressHeartbeat(_extra, 'Editing image', () =>
+        edit_image({ imageSources, prompt, outputFilePath, aspectRatio, imageSize }, config, imageProvider)
       );
 
       const inlineImage = result.images[0]
@@ -983,10 +1014,8 @@ server.registerTool<any, any>(
     try {
       const { config, videoProvider } = getServices();
 
-      const result = await analyze_audio(
-        { audioSource, prompt, options },
-        config,
-        videoProvider
+      const result = await withProgressHeartbeat(_extra, 'Analyzing audio', () =>
+        analyze_audio({ audioSource, prompt, options }, config, videoProvider)
       );
 
       return {
@@ -1027,6 +1056,194 @@ server.registerTool<any, any>(
         isError: true,
       };
     }
+  }
+);
+
+// Register start_video_analysis tool (async job pattern for big files)
+server.registerTool<any, any>(
+  'start_video_analysis',
+  {
+    title: 'Start Video Analysis (async)',
+    description:
+      'Start analyzing a video in the background and return a jobId IMMEDIATELY - the reliable path for large local files (over ~50MB) whose upload + processing exceeds MCP client tool timeouts. Same arguments and result as analyze_video. After starting, poll get_analysis_result with the jobId every 15-30 seconds until status is "done". Typical total time for a several-hundred-MB recording: 2-6 minutes.',
+    inputSchema: z.object({
+      videoSource: z
+        .string()
+        .describe('Video source - can be a URL or local file path'),
+      prompt: z
+        .string()
+        .describe(
+          'The prompt describing what you want to know about the video.'
+        ),
+      options: z
+        .object({
+          temperature: z.number().min(0).max(2).optional(),
+          maxTokens: z.number().int().min(1).max(65536).optional(),
+          videoMetadata: z
+            .object({
+              startOffset: z.union([z.string(), z.number()]).optional(),
+              endOffset: z.union([z.string(), z.number()]).optional(),
+              fps: z.number().min(0.1).max(30).optional(),
+            })
+            .optional()
+            .describe('Clipping/fps settings (forces static processing)'),
+          mediaResolution: z
+            .enum(['low', 'medium', 'high', 'ultra_high'])
+            .optional(),
+          thinkingLevel: z
+            .enum(['minimal', 'low', 'medium', 'high'])
+            .optional(),
+          processing: z.enum(['agentic', 'static']).optional(),
+          seed: z.number().int().optional(),
+        })
+        .optional(),
+    }),
+  },
+  async (args: any, _extra: any) => {
+    const { videoSource, prompt, options } = args;
+    try {
+      if (!videoSource || !prompt) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(
+                {
+                  error: true,
+                  message: 'videoSource and prompt are required',
+                  tool: 'start_video_analysis',
+                },
+                null,
+                2
+              ),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const { config, videoProvider, videoFileService } = getServices();
+
+      const job = startJob('analyze_video', async update => {
+        update('uploading video (large files go to the Files API)...');
+        const processedSource =
+          await videoFileService.handleVideoSource(videoSource);
+        update(
+          'upload complete; waiting for Google processing and analyzing...'
+        );
+        return await analyze_video(
+          { videoSource: processedSource, prompt, options },
+          config,
+          videoProvider,
+          videoFileService
+        );
+      });
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              {
+                jobId: job.id,
+                status: job.status,
+                note: 'Analysis running in the background. Poll get_analysis_result with this jobId every 15-30 seconds until status is "done".',
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      void logger.error(
+        {
+          msg: 'Error executing start_video_analysis tool',
+          error: String(error),
+        },
+        'tools/start_video_analysis'
+      );
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              {
+                error: true,
+                message: error instanceof Error ? error.message : String(error),
+                tool: 'start_video_analysis',
+              },
+              null,
+              2
+            ),
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Register get_analysis_result tool (poll async jobs)
+server.registerTool<any, any>(
+  'get_analysis_result',
+  {
+    title: 'Get Analysis Result',
+    description:
+      'Fetch the status/result of a background job started with start_video_analysis. Returns status "running" (poll again in 15-30 seconds), "done" (with the full analysis result), or "error". Results are kept for 30 minutes.',
+    inputSchema: z.object({
+      jobId: z.string().describe('The jobId returned by start_video_analysis'),
+    }),
+  },
+  async (args: any, _extra: any) => {
+    const job = getJob(args.jobId);
+
+    if (!job) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              {
+                error: true,
+                message: `Unknown jobId: ${args.jobId} (results expire after 30 minutes)`,
+                tool: 'get_analysis_result',
+              },
+              null,
+              2
+            ),
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const elapsedSeconds = Math.round(
+      ((job.finishedAt ?? Date.now()) - job.startedAt) / 1000
+    );
+
+    const payload: Record<string, unknown> = {
+      jobId: job.id,
+      tool: job.tool,
+      status: job.status,
+      elapsedSeconds,
+      message: job.message,
+    };
+    if (job.status === 'done') payload.result = job.result;
+    if (job.status === 'error') payload.error = job.error;
+    if (job.status === 'running') {
+      payload.note = 'Still running - poll again in 15-30 seconds.';
+    }
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify(payload, null, 2),
+        },
+      ],
+      ...(job.status === 'error' ? { isError: true } : {}),
+    };
   }
 );
 
@@ -1150,7 +1367,7 @@ server.registerTool<any, any>(
   {
     title: 'Analyze Video',
     description:
-      'Analyze a video using AI vision models. Supports YouTube URLs, direct video URLs, and local file paths. The audio track is analyzed too (transcription, narration). For reading exact small on-screen text at a known moment, prefer extract_video_frame + analyze_image at "ultra_high" instead - video analysis caps at 280 tokens/frame.',
+      'Analyze a video using AI vision models. Supports YouTube URLs, direct video URLs, and local file paths. The audio track is analyzed too (transcription, narration). For reading exact small on-screen text at a known moment, prefer extract_video_frame + analyze_image at "ultra_high" instead - video analysis caps at 280 tokens/frame. IMPORTANT: large local files (over ~50MB) upload to the Files API and can take several minutes total, which exceeds some MCP client tool timeouts (Cursor ~60s) - for those, use start_video_analysis + get_analysis_result instead of this tool.',
     inputSchema: z.object({
       videoSource: z
         .string()
@@ -1260,11 +1477,8 @@ server.registerTool<any, any>(
       // Initialize services on-demand
       const { config, videoProvider, videoFileService } = getServices();
 
-      const result = await analyze_video(
-        validatedArgs,
-        config,
-        videoProvider,
-        videoFileService
+      const result = await withProgressHeartbeat(_extra, 'Analyzing video (large files upload to the Files API first)', () =>
+        analyze_video(validatedArgs, config, videoProvider, videoFileService)
       );
 
       return {

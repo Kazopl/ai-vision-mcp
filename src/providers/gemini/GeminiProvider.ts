@@ -1004,10 +1004,16 @@ export class GeminiProvider extends BaseVisionProvider {
   }
 
   async waitForFileProcessing(fileId: string): Promise<void> {
-    const maxAttempts = 30; // Maximum 30 attempts
-    const delay = 2000; // 2 seconds between attempts
+    // Large videos can stay in PROCESSING for several minutes (a 5-minute
+    // 4K screen recording routinely needs 2-4 minutes), so wait up to 10
+    // minutes with gentle backoff. The old 60s cap made every big upload
+    // fail with a spurious timeout.
+    const maxWaitMs = 10 * 60 * 1000;
+    const startedAt = Date.now();
+    let delay = 2000;
+    let lastError: unknown;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    while (Date.now() - startedAt < maxWaitMs) {
       try {
         const fileMetadata = await this.getFileMetadata(fileId);
 
@@ -1021,22 +1027,27 @@ export class GeminiProvider extends BaseVisionProvider {
             'gemini'
           );
         }
-      } catch (error) {
-        // If it's a network error, we'll retry
-        if (attempt === maxAttempts) {
-          throw new FileUploadError(
-            `Failed to check file status after ${maxAttempts} attempts: ${error instanceof Error ? error.message : String(error)}`,
-            'gemini'
+
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        if (elapsed > 0 && elapsed % 30 < delay / 1000) {
+          console.error(
+            `[GeminiProvider] File ${fileId} still processing after ${elapsed}s...`
           );
         }
+      } catch (error) {
+        if (error instanceof FileUploadError) {
+          throw error;
+        }
+        // Network errors: remember and retry until the deadline
+        lastError = error;
       }
 
-      // Wait before the next attempt
       await new Promise(resolve => setTimeout(resolve, delay));
+      delay = Math.min(delay * 1.5, 5000);
     }
 
     throw new FileUploadError(
-      `File processing timed out after ${(maxAttempts * delay) / 1000} seconds`,
+      `File processing timed out after ${Math.round(maxWaitMs / 1000)} seconds${lastError ? ` (last error: ${lastError instanceof Error ? lastError.message : String(lastError)})` : ''}`,
       'gemini'
     );
   }
