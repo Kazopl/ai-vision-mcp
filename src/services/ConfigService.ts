@@ -217,6 +217,15 @@ export class ConfigService {
           ? parseInt(process.env.GEMINI_TIMEOUT_MS, 10)
           : undefined,
 
+        // ffmpeg video normalization
+        VIDEO_PREPROCESS: process.env.VIDEO_PREPROCESS,
+        VIDEO_PREPROCESS_MAX_DIM: process.env.VIDEO_PREPROCESS_MAX_DIM
+          ? parseInt(process.env.VIDEO_PREPROCESS_MAX_DIM, 10)
+          : undefined,
+        VIDEO_PREPROCESS_FPS: process.env.VIDEO_PREPROCESS_FPS
+          ? parseFloat(process.env.VIDEO_PREPROCESS_FPS)
+          : undefined,
+
         // Task-specific API parameters
         TEMPERATURE_FOR_IMAGE: process.env.TEMPERATURE_FOR_IMAGE
           ? parseFloat(process.env.TEMPERATURE_FOR_IMAGE)

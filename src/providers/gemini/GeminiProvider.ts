@@ -1004,8 +1004,10 @@ export class GeminiProvider extends BaseVisionProvider {
   }
 
   async waitForFileProcessing(fileId: string): Promise<void> {
-    const maxAttempts = 30; // Maximum 30 attempts
-    const delay = 2000; // 2 seconds between attempts
+    // Large videos can take minutes to reach ACTIVE server-side; the old
+    // 60s window caused intermittent "processing" failures on big uploads.
+    const maxAttempts = 100; // ~5 minutes at 3s intervals
+    const delay = 3000; // 3 seconds between attempts
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {

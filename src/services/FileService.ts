@@ -108,9 +108,9 @@ export class FileService {
     try {
       const normalizedPath = path.normalize(filePath);
       await fs.access(normalizedPath);
-      const buffer = await fs.readFile(normalizedPath);
-      const filename = path.basename(normalizedPath);
-      const mimeType = this.getMimeType(filename, buffer);
+      let buffer = await fs.readFile(normalizedPath);
+      let filename = path.basename(normalizedPath);
+      let mimeType = this.getMimeType(filename, buffer);
 
       // Fail fast if MIME type is unknown
       if (!mimeType.startsWith('video/')) {
@@ -127,6 +127,47 @@ export class FileService {
       const inlineThreshold = process.env.GEMINI_FILES_API_THRESHOLD
         ? parseInt(process.env.GEMINI_FILES_API_THRESHOLD, 10)
         : 50 * 1024 * 1024;
+
+      // Oversized videos (e.g. 240fps Retina screen recordings): the API
+      // samples ~1 FPS and downscales frames internally, so uploading the
+      // raw file wastes minutes on transfer + server-side processing and
+      // can exceed MCP tool timeouts. Normalize with ffmpeg when available
+      // (VIDEO_PREPROCESS=off disables; see VIDEO_PREPROCESS_* env vars).
+      if (
+        buffer.length > inlineThreshold &&
+        process.env.VIDEO_PREPROCESS !== 'off'
+      ) {
+        const maxDimension = process.env.VIDEO_PREPROCESS_MAX_DIM
+          ? parseInt(process.env.VIDEO_PREPROCESS_MAX_DIM, 10)
+          : 1280;
+        const maxFps = process.env.VIDEO_PREPROCESS_FPS
+          ? parseFloat(process.env.VIDEO_PREPROCESS_FPS)
+          : 10;
+
+        console.error(
+          `[FileService] Video is ${Math.round(buffer.length / 1024 / 1024)}MB; normalizing with ffmpeg (max ${maxDimension}px, ${maxFps}fps)...`
+        );
+        const { normalizeVideoForUpload } = await import(
+          '../utils/ffmpeg.js'
+        );
+        const normalized = await normalizeVideoForUpload(normalizedPath, {
+          maxDimension,
+          maxFps,
+        });
+        if (normalized) {
+          try {
+            const normalizedBuffer = await fs.readFile(normalized.path);
+            console.error(
+              `[FileService] Normalized to ${Math.round(normalizedBuffer.length / 1024 / 1024)}MB`
+            );
+            buffer = normalizedBuffer;
+            filename = filename.replace(/\.[^.]+$/, '') + '.mp4';
+            mimeType = 'video/mp4';
+          } finally {
+            await normalized.cleanup();
+          }
+        }
+      }
 
       if (buffer.length <= inlineThreshold) {
         // Use inline binary data for videos within the threshold

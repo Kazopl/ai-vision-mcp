@@ -134,6 +134,11 @@ export const ConfigSchema = z.object({
   // HTTP timeout for Gemini API requests (ms)
   GEMINI_TIMEOUT_MS: z.number().int().positive().optional(),
 
+  // ffmpeg normalization of oversized local videos
+  VIDEO_PREPROCESS: z.enum(['auto', 'off']).optional(),
+  VIDEO_PREPROCESS_MAX_DIM: z.number().int().positive().optional(),
+  VIDEO_PREPROCESS_FPS: z.number().positive().optional(),
+
   // Function-specific API parameters
   TEMPERATURE_FOR_ANALYZE_IMAGE: z.number().min(0).max(2).optional(),
   TOP_P_FOR_ANALYZE_IMAGE: z.number().min(0).max(1).optional(),

@@ -160,6 +160,151 @@ export async function extractFramesAtTimestamps(
   return frames;
 }
 
+export interface VideoProbeInfo {
+  width: number;
+  height: number;
+  fps: number;
+  durationSeconds: number;
+}
+
+/** Probe basic video properties via ffprobe (best effort). */
+export async function probeVideo(
+  videoPath: string
+): Promise<VideoProbeInfo | null> {
+  const ffmpeg = await resolveFfmpegPath();
+  const ffprobe = ffmpeg.replace(/ffmpeg([^/\\]*)$/, 'ffprobe$1');
+  try {
+    const { stdout } = await execFileAsync(
+      ffprobe,
+      [
+        '-v',
+        'error',
+        '-select_streams',
+        'v:0',
+        '-show_entries',
+        'stream=width,height,r_frame_rate',
+        '-show_entries',
+        'format=duration',
+        '-of',
+        'json',
+        videoPath,
+      ],
+      { timeout: 30000 }
+    );
+    const parsed = JSON.parse(stdout);
+    const stream = parsed.streams?.[0];
+    if (!stream) return null;
+    const [num, den] = String(stream.r_frame_rate || '30/1').split('/');
+    const fps = parseFloat(den) > 0 ? parseFloat(num) / parseFloat(den) : 30;
+    return {
+      width: stream.width || 0,
+      height: stream.height || 0,
+      fps,
+      durationSeconds: parseFloat(parsed.format?.duration || '0'),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface NormalizeVideoOptions {
+  maxDimension?: number; // default 1280
+  maxFps?: number; // default 10
+  timeoutMs?: number; // default 600000
+}
+
+export interface NormalizedVideo {
+  path: string;
+  cleanup: () => Promise<void>;
+}
+
+/**
+ * Normalize a pathological video for the Gemini API: downscale, cap the
+ * frame rate, and re-encode as faststart H.264/AAC. The API samples video
+ * at ~1 FPS and downscales frames internally, so oversized screen
+ * recordings (e.g. 240fps Retina captures) upload 10-40x more bytes than
+ * the model ever looks at. Returns null when ffmpeg is unavailable.
+ */
+export async function normalizeVideoForUpload(
+  videoPath: string,
+  options: NormalizeVideoOptions = {}
+): Promise<NormalizedVideo | null> {
+  let ffmpeg: string;
+  try {
+    ffmpeg = await resolveFfmpegPath();
+  } catch {
+    return null; // ffmpeg not installed: caller keeps the original file
+  }
+
+  const maxDimension = options.maxDimension ?? 1280;
+  const maxFps = options.maxFps ?? 10;
+
+  const info = await probeVideo(videoPath);
+  const filters: string[] = [];
+  if (info && Math.max(info.width, info.height) > maxDimension) {
+    filters.push(
+      `scale=w=${maxDimension}:h=${maxDimension}:force_original_aspect_ratio=decrease:force_divisible_by=2`
+    );
+  }
+  const fpsArgs: string[] = [];
+  if (!info || info.fps > maxFps) {
+    fpsArgs.push('-r', String(maxFps));
+  }
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-vision-norm-'));
+  const outPath = path.join(dir, 'normalized.mp4');
+
+  try {
+    await execFileAsync(
+      ffmpeg,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-i',
+        videoPath,
+        ...(filters.length ? ['-vf', filters.join(',')] : []),
+        ...fpsArgs,
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-crf',
+        '28',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '64k',
+        '-ac',
+        '1',
+        '-movflags',
+        '+faststart',
+        '-y',
+        outPath,
+      ],
+      { timeout: options.timeoutMs ?? 600000, maxBuffer: 16 * 1024 * 1024 }
+    );
+    const stat = await fs.stat(outPath);
+    if (stat.size === 0) throw new Error('empty output');
+    return {
+      path: outPath,
+      cleanup: async () => {
+        await fs.rm(dir, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    await fs.rm(dir, { recursive: true, force: true });
+    console.error(
+      `[ffmpeg] Video normalization failed, using the original file: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return null;
+  }
+}
+
 /**
  * Extract frames at scene changes using ffmpeg's select filter. Frame
  * timestamps are parsed from the showinfo filter output.

@@ -67,6 +67,11 @@ export interface Config {
   // HTTP timeout for Gemini API requests in milliseconds
   GEMINI_TIMEOUT_MS?: number;
 
+  // ffmpeg normalization of oversized local videos before upload
+  VIDEO_PREPROCESS?: string; // 'auto' (default) | 'off'
+  VIDEO_PREPROCESS_MAX_DIM?: number; // default 1280
+  VIDEO_PREPROCESS_FPS?: number; // default 10
+
   // Task-specific API parameters
   TEMPERATURE_FOR_IMAGE?: number;
   TOP_P_FOR_IMAGE?: number;

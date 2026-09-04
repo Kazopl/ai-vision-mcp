@@ -98,6 +98,9 @@ The AI Vision MCP Server uses a hierarchical configuration system where more spe
 | `SAFETY_THRESHOLD` | No | Safety filter threshold for all harm categories: `off`, `block_none`, `block_only_high`, `block_medium_and_above`. `block_none` prevents spurious refusals on legitimate dev content (security errors, tokens, exploits) | API defaults |
 | `SERVICE_TIER` | No | Inference tier: `priority` (lowest latency, +75-100% price, needs Tier 2/3 paid project; auto-downgrades otherwise) or `flex` (50% cheaper, minutes-level latency) | `standard` |
 | `GEMINI_TIMEOUT_MS` | No | HTTP timeout for Gemini API requests (agentic loops can run minutes) | `300000` |
+| `VIDEO_PREPROCESS` | No | ffmpeg normalization of local videos above the inline threshold (`auto`/`off`): downscale + fps cap + faststart H.264 before upload. The API samples ~1fps and downscales frames, so raw high-fps recordings only waste upload/processing time | `auto` |
+| `VIDEO_PREPROCESS_MAX_DIM` | No | Longest output dimension for normalized videos (px) | `1280` |
+| `VIDEO_PREPROCESS_FPS` | No | Frame rate cap for normalized videos | `10` |
 | `INLINE_IMAGE_MAX_DIM` | No | Max dimension (px) of the inline annotated-image preview returned by detect/segment/extract tools; `0` disables inline images | `1200` |
 | `FFMPEG_PATH` | No | Path to the ffmpeg binary (used only by `extract_video_frame`) | `ffmpeg` on PATH |
 
