@@ -29,6 +29,27 @@ export class GeminiFilesAPI implements FileUploadStrategy {
     }
   }
 
+  /** Streaming path upload (resumable, chunked - no full memory buffering). */
+  async uploadFileFromPath(
+    filePath: string,
+    filename: string,
+    mimeType: string
+  ): Promise<UploadedFile> {
+    try {
+      return await this.geminiProvider.uploadFileFromPath(
+        filePath,
+        mimeType,
+        filename
+      );
+    } catch (error) {
+      throw new FileUploadError(
+        `Failed to upload file to Gemini Files API: ${error instanceof Error ? error.message : String(error)}`,
+        'gemini',
+        error instanceof Error ? error : new Error(String(error))
+      );
+    }
+  }
+
   async getFileForAnalysis(uploadedFile: UploadedFile): Promise<FileReference> {
     if (!uploadedFile.uri) {
       throw new FileUploadError(

@@ -429,9 +429,11 @@ describe('CLI E2E Tests', () => {
 
   describe('Error Handling', () => {
     test('should handle invalid image URL gracefully', async () => {
+      // .invalid is a reserved TLD: DNS resolution fails fast and
+      // deterministically (the previous httpstat.us dependency was flaky).
       const result = await runCliCommand([
         'analyze-image',
-        'https://httpstat.us/404',
+        'https://image-host.invalid/image.jpg',
         '--prompt',
         'Describe this',
         '--json',

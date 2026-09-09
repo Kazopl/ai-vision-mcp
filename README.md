@@ -505,7 +505,7 @@ Analyzes audio files using Gemini's native audio understanding: transcription (a
 - `prompt` (string): e.g. "Transcribe with speaker labels and MM:SS timestamps"
 - `options` (object, optional): `temperature`, `maxTokens` (use 8000+ for full transcriptions), `thinkingLevel`
 
-Files up to 18MB are sent inline; larger files upload via the Files API automatically (Gemini provider) or need a `gs://` URI (Vertex AI).
+All audio uploads go through the Gemini Files API (streamed from disk for local files) regardless of size. Vertex AI needs a `gs://` URI for large files.
 
 ### 9) `start_video_analysis` + `get_analysis_result`
 
@@ -536,6 +536,9 @@ Analyzes a video using AI and returns a detailed description.
 **Supported video sources:**
 - YouTube URLs (e.g., `https://www.youtube.com/watch?v=...`)
 - Local file paths (e.g., `C:\Users\username\Downloads\video.mp4`)
+- Remote video URLs and `files/...` references from a previous upload
+
+**File handling:** every local or remote video goes through one canonical path - the Gemini Files API resumable upload, streamed from disk in 8MB chunks. Constant memory for any size up to the API's 2GB cap, no inline/upload branching. The returned `files/...` reference stays valid for 48 hours, so repeat analyses of the same video skip the upload entirely.
 
 **Examples:**
 

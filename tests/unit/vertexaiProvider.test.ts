@@ -14,6 +14,11 @@ vi.mock('@google/genai', () => ({
 
 import { VertexAIProvider } from '../../src/providers/vertexai/VertexAIProvider.js';
 
+// BaseVisionProvider pulls in the ConfigService singleton, which requires a
+// Gemini key when IMAGE_PROVIDER defaults to google. Provide a dummy so this
+// suite passes regardless of test ordering or local env.
+process.env.GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'test-key';
+
 describe('VertexAIProvider source parity', () => {
   beforeEach(() => {
     generateContentMock.mockReset();

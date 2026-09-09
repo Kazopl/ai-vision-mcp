@@ -221,7 +221,7 @@ export VERTEX_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBg...\n-----
 
 | Variable | Required | Description | Default |
 |----------|-----------|-------------|---------|
-| `GEMINI_FILES_API_THRESHOLD` | No | Size threshold for Gemini Files API | `10485760` (10 MB) |
+| `GEMINI_FILES_API_THRESHOLD` | No | Inline/Files API cutoff for **images only** (videos and audio always use the Files API) | `10485760` (10 MB) |
 | `VERTEX_AI_FILES_API_THRESHOLD` | No | Size threshold for Vertex AI uploads | `0` |
 
 ### Development Configuration
@@ -317,11 +317,19 @@ export MAX_TOKENS_FOR_VIDEO=2000
 
 ### Gemini Provider Strategy
 
+**Videos and audio always use the Files API** - a single canonical upload
+path for every file size. The SDK streams the file from disk over the
+resumable upload protocol in 8MB chunks (constant memory), up to the API's
+2GB per-file cap. Uploaded files are reusable for 48 hours (pass the
+returned `files/...` reference to skip re-uploading).
+
+The threshold below applies to **images only**:
+
 ```bash
 export GEMINI_FILES_API_THRESHOLD=10485760  # 10MB
 
-# Files ≤ 10MB: Use inline base64 data
-# Files > 10MB: Use Gemini Files API
+# Images ≤ 10MB: inline base64 data (lowest latency for screenshots)
+# Images > 10MB: Gemini Files API
 ```
 
 ### Vertex AI Provider Strategy

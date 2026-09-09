@@ -60,6 +60,12 @@ export interface VisionProvider {
     filename: string,
     mimeType: string
   ): Promise<UploadedFile>;
+  /** Optional streaming upload from a local file path (no memory buffering) */
+  uploadFileFromPath?(
+    filePath: string,
+    mimeType: string,
+    displayName?: string
+  ): Promise<UploadedFile>;
   downloadFile(fileId: string): Promise<Buffer>;
   deleteFile(fileId: string): Promise<void>;
 
@@ -81,6 +87,12 @@ export interface VisionProvider {
 export interface FileUploadStrategy {
   uploadFile(
     buffer: Buffer,
+    filename: string,
+    mimeType: string
+  ): Promise<UploadedFile>;
+  /** Optional streaming upload from a local file path (no memory buffering) */
+  uploadFileFromPath?(
+    filePath: string,
     filename: string,
     mimeType: string
   ): Promise<UploadedFile>;

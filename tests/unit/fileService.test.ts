@@ -35,6 +35,7 @@ const configService = {
 
 const visionProvider = {
   uploadFile: vi.fn(),
+  uploadFileFromPath: vi.fn(),
   waitForFileProcessing: vi.fn(),
   deleteFile: vi.fn(),
   analyzeVideo: vi.fn(),
@@ -104,7 +105,16 @@ describe('FileService.handleVideoSource', () => {
     expect((service as any).isSupportedFileType('video/x-flv')).toBe(true);
   });
 
-  test('downloads small remote videos and returns inline base64 data', async () => {
+  const uploadedFileFixture = {
+    id: 'files/abc123',
+    filename: 'video.mp4',
+    mimeType: 'video/mp4',
+    size: 16,
+    uri: 'https://generativelanguage.googleapis.com/v1beta/files/abc123',
+    state: 'ACTIVE',
+  };
+
+  test('uploads small remote videos via the Files API (single canonical path)', async () => {
     fetchMock.mockResolvedValue(
       createResponse({
         contentLength: '16',
@@ -112,12 +122,9 @@ describe('FileService.handleVideoSource', () => {
         bodyChunks: [Buffer.from('small-video-data')],
       })
     );
+    visionProvider.uploadFileFromPath.mockResolvedValue(uploadedFileFixture);
 
     const service = new FileService(configService, 'video', visionProvider);
-    vi.spyOn(service as any, 'readVideoStreamWithLimit').mockResolvedValue(
-      Buffer.from('small-video-data')
-    );
-
     const result = await service.handleVideoSource(
       'https://example.com/video.mp4'
     );
@@ -127,105 +134,86 @@ describe('FileService.handleVideoSource', () => {
       'https://example.com/video.mp4',
       expect.objectContaining({ method: 'GET' })
     );
-    expect(result.startsWith('data:video/mp4;base64,')).toBe(true);
-    expect(result).toContain(Buffer.from('small-video-data').toString('base64'));
+    expect(result).toBe(uploadedFileFixture.uri);
+    expect(visionProvider.uploadFileFromPath).toHaveBeenCalledWith(
+      expect.stringContaining('video.mp4'),
+      'video/mp4',
+      'video.mp4'
+    );
+    expect(visionProvider.waitForFileProcessing).toHaveBeenCalled();
   });
 
-  test('destroys the remote response stream when the inline threshold is exceeded', async () => {
-    const firstResponse = createResponse({
-      contentLength: String(50 * 1024 * 1024 + 1),
-      contentType: 'video/mp4',
-      bodyChunks: [Buffer.alloc(1024, 1)],
-    });
-    const secondResponse = createResponse({
-      contentType: 'video/mp4',
-      bodyChunks: [Buffer.from('upload-fallback')],
-    });
-
-    fetchMock.mockResolvedValueOnce(firstResponse).mockResolvedValueOnce(secondResponse);
+  test('uploads large remote videos through the same path (no size branching)', async () => {
+    fetchMock.mockResolvedValue(
+      createResponse({
+        contentLength: String(500 * 1024 * 1024),
+        contentType: 'video/mp4',
+        bodyChunks: [Buffer.alloc(1024, 1)],
+      })
+    );
+    visionProvider.uploadFileFromPath.mockResolvedValue(uploadedFileFixture);
 
     const service = new FileService(configService, 'video', visionProvider);
-    vi.spyOn(service as any, 'uploadFile').mockResolvedValue('files/abc123');
-    vi.spyOn(service as any, 'readVideoStreamWithLimit').mockResolvedValue(null);
-
     const result = await service.handleVideoSource(
       'https://example.com/huge-video.mp4'
     );
 
-    expect(result).toBe('files/abc123');
+    // One fetch, one streaming upload - identical to the small-file flow
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toBe(uploadedFileFixture.uri);
   });
 
-  test('normalizes remote video filename before upload fallback', async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        createResponse({
-          contentLength: String(50 * 1024 * 1024 + 1),
-          contentType: 'video/quicktime',
-          bodyChunks: [Buffer.from('large-video')],
-        })
-      )
-      .mockResolvedValueOnce(
-        createResponse({
-          contentType: 'video/quicktime',
-          bodyChunks: [Buffer.from('large-video')],
-        })
-      );
+  test('normalizes remote video filename before upload', async () => {
+    fetchMock.mockResolvedValue(
+      createResponse({
+        contentType: 'video/quicktime',
+        bodyChunks: [Buffer.from('large-video')],
+      })
+    );
+    visionProvider.uploadFileFromPath.mockResolvedValue({
+      ...uploadedFileFixture,
+      mimeType: 'video/quicktime',
+    });
 
     const service = new FileService(configService, 'video', visionProvider);
-    vi.spyOn(service as any, 'uploadFile').mockResolvedValue('files/abc123');
-    vi.spyOn(service as any, 'readVideoStreamWithLimit').mockResolvedValue(null);
-
     const result = await service.handleVideoSource(
       'https://example.com/path/to/video.mov?download=1'
     );
 
-    expect(result).toBe('files/abc123');
-    expect((service as any).uploadFile).toHaveBeenCalledWith(
-      expect.any(Buffer),
-      'video.mov',
-      'video/quicktime'
+    expect(result).toBe(uploadedFileFixture.uri);
+    expect(visionProvider.uploadFileFromPath).toHaveBeenCalledWith(
+      expect.stringContaining('video.mov'),
+      'video/quicktime',
+      'video.mov'
     );
   });
 
-  test('returns the remote url unchanged for large videos', async () => {
-    fetchMock.mockResolvedValue(
-      createResponse({
-        contentLength: String(50 * 1024 * 1024 + 1),
-        contentType: 'video/mp4',
-        bodyChunks: [Buffer.from('too-large')],
-      })
-    );
+  test('returns the remote url unchanged when the download fails', async () => {
+    fetchMock.mockResolvedValue(createResponse({ ok: false }));
 
     const service = new FileService(configService, 'video', visionProvider);
-    vi.spyOn(service as any, 'uploadRemoteVideoStream').mockResolvedValue(
-      'https://example.com/large-video.mp4'
-    );
-
     const result = await service.handleVideoSource(
       'https://example.com/large-video.mp4'
     );
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(result).toBe('https://example.com/large-video.mp4');
+    expect(visionProvider.uploadFileFromPath).not.toHaveBeenCalled();
   });
 
-  test('falls back to inline data when content-length is missing', async () => {
+  test('uploads remote videos when content-length is missing', async () => {
     fetchMock.mockResolvedValue(
       createResponse({
         bodyChunks: [Buffer.from('tiny-video')],
       })
     );
+    visionProvider.uploadFileFromPath.mockResolvedValue(uploadedFileFixture);
 
     const service = new FileService(configService, 'video', visionProvider);
-    vi.spyOn(service as any, 'readVideoStreamWithLimit').mockResolvedValue(
-      Buffer.from('tiny-video')
-    );
-
     const result = await service.handleVideoSource(
       'https://example.com/no-content-length.mp4'
     );
 
-    expect(result.startsWith('data:video/mp4;base64,')).toBe(true);
+    expect(result).toBe(uploadedFileFixture.uri);
   });
 
   test('keeps youtube urls unchanged', async () => {
@@ -239,15 +227,33 @@ describe('FileService.handleVideoSource', () => {
     expect(result).toBe('https://www.youtube.com/watch?v=9hE5-98ZeCg');
   });
 
-  test('processes local mpeg videos with Gemini-supported mime types', async () => {
+  test('uploads local videos via streaming Files API path', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-vision-mpeg-'));
     const filePath = path.join(dir, 'sample.mpeg');
     await fs.writeFile(filePath, Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]));
 
+    visionProvider.uploadFileFromPath.mockResolvedValue({
+      id: 'files/local1',
+      filename: 'sample.mpeg',
+      mimeType: 'video/mpeg',
+      size: 12,
+      uri: 'https://generativelanguage.googleapis.com/v1beta/files/local1',
+      state: 'ACTIVE',
+    });
+
     const service = new FileService(configService, 'video', visionProvider);
     const result = await service.handleVideoSource(filePath);
 
-    expect(result.startsWith('data:video/mpeg;base64,')).toBe(true);
+    expect(result).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/files/local1'
+    );
+    // Streamed from path - the file is never read fully into memory
+    expect(visionProvider.uploadFileFromPath).toHaveBeenCalledWith(
+      expect.stringContaining('sample.mpeg'),
+      'video/mpeg',
+      'sample.mpeg'
+    );
+    expect(visionProvider.uploadFile).not.toHaveBeenCalled();
   });
 
   test('returns Gemini-compatible file extensions for supported mime types', () => {

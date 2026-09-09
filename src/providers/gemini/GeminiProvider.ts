@@ -2,6 +2,8 @@
  * Gemini API provider implementation
  */
 
+import fs from 'fs/promises';
+import path from 'path';
 import { GoogleGenAI, setDefaultBaseUrls } from '@google/genai';
 import { BaseVisionProvider } from '../base/VisionProvider.js';
 import { FUNCTION_NAMES } from '../../constants/FunctionNames.js';
@@ -33,7 +35,7 @@ import { processVideoSource } from '../../utils/videoSourceHandler.js';
 import { processImageSource } from '../../utils/imageSourceHandler.js';
 import {
   loadAudioSource,
-  AUDIO_INLINE_THRESHOLD,
+  getAudioMimeType,
 } from '../../utils/audioSourceHandler.js';
 import type {
   EditImageInput,
@@ -601,6 +603,46 @@ export class GeminiProvider extends BaseVisionProvider {
     }
   }
 
+  /**
+   * Canonical upload: stream a local file to the Files API from its path.
+   * The SDK's Node uploader reads the file in 8MB chunks over the resumable
+   * upload protocol, so nothing is buffered fully in memory - works
+   * identically for a 1MB clip or a 2GB recording (the Files API cap).
+   */
+  async uploadFileFromPath(
+    filePath: string,
+    mimeType: string,
+    displayName?: string
+  ): Promise<UploadedFile> {
+    try {
+      const stat = await fs.stat(filePath);
+      const name = displayName ?? path.basename(filePath);
+
+      const { result: file } = await this.measureAsync(async () => {
+        return await this.client.files.upload({
+          file: filePath,
+          config: { mimeType, displayName: name },
+        });
+      });
+
+      return {
+        id: file.name || '',
+        filename: name,
+        mimeType: file.mimeType || mimeType,
+        size: stat.size,
+        uri: file.uri || '',
+        displayName: file.displayName || name,
+        state: (file.state as 'PROCESSING' | 'ACTIVE' | 'FAILED') || undefined,
+        createTime: file.createTime,
+        updateTime: file.updateTime,
+        expirationTime: file.expirationTime,
+        sha256Hash: file.sha256Hash,
+      };
+    } catch (error) {
+      throw this.handleError(error, 'file upload');
+    }
+  }
+
   async downloadFile(fileId: string): Promise<Buffer> {
     try {
       // First get file metadata to get the download URL
@@ -649,38 +691,54 @@ export class GeminiProvider extends BaseVisionProvider {
         }
         content = { fileData: { fileUri: audioSource, mimeType } };
       } else {
-        const { result: loaded, duration: loadDuration } =
-          await this.measureAsync(async () => loadAudioSource(audioSource));
-        processingDuration += loadDuration;
-        fileSize = loaded.buffer.length;
+        // Canonical single upload path: everything goes through the Files
+        // API regardless of size. Local files stream from disk (resumable,
+        // chunked); data URIs and remote URLs upload their fetched bytes.
+        let uploadedFile: UploadedFile;
+        const isLocalFile =
+          !audioSource.startsWith('data:') && !/^https?:\/\//i.test(audioSource);
 
-        if (loaded.buffer.length <= AUDIO_INLINE_THRESHOLD) {
-          content = {
-            inlineData: {
-              mimeType: loaded.mimeType,
-              data: loaded.buffer.toString('base64'),
-            },
-          };
+        if (isLocalFile) {
+          const stat = await fs.stat(audioSource).catch(() => {
+            throw new FileNotFoundError(audioSource);
+          });
+          fileSize = stat.size;
+          const { result, duration } = await this.measureAsync(async () => {
+            return await this.uploadFileFromPath(
+              audioSource,
+              getAudioMimeType(audioSource),
+              path.basename(audioSource)
+            );
+          });
+          uploadedFile = result;
+          processingDuration += duration;
         } else {
-          // Large audio: upload via Files API
-          const { result: uploadedFile, duration: uploadDuration } =
-            await this.measureAsync(async () => {
+          const { result: loaded, duration: loadDuration } =
+            await this.measureAsync(async () => loadAudioSource(audioSource));
+          processingDuration += loadDuration;
+          fileSize = loaded.buffer.length;
+
+          const { result, duration: uploadDuration } = await this.measureAsync(
+            async () => {
               return await this.uploadFile(
                 loaded.buffer,
                 loaded.filename,
                 loaded.mimeType
               );
-            });
+            }
+          );
+          uploadedFile = result;
           processingDuration += uploadDuration;
-          const fileId = uploadedFile.uri!.split('/').pop()!;
-          await this.waitForFileProcessing(fileId);
-          content = {
-            fileData: {
-              fileUri: uploadedFile.uri!,
-              mimeType: loaded.mimeType,
-            },
-          };
         }
+
+        const fileId = uploadedFile.uri!.split('/').pop()!;
+        await this.waitForFileProcessing(fileId);
+        content = {
+          fileData: {
+            fileUri: uploadedFile.uri!,
+            mimeType: uploadedFile.mimeType,
+          },
+        };
       }
 
       const model = this.resolveModelForFunction(

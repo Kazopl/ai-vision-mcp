@@ -40,7 +40,6 @@ function toNodeReadable(
 }
 
 export class FileService {
-  private static readonly REMOTE_VIDEO_INLINE_THRESHOLD = 50 * 1024 * 1024;
   private static readonly REMOTE_VIDEO_TIMEOUT_MS = 30000;
 
   private uploadStrategy: FileUploadStrategy;
@@ -96,7 +95,7 @@ export class FileService {
       return await this.handleRemoteVideoFile(videoSource);
     }
 
-    // If it's a local file path, check size and decide between inline or Files API
+    // Local file path: canonical single upload path (Files API, streamed)
     if (this.isLocalFilePath(videoSource)) {
       return await this.handleLocalVideoFile(videoSource);
     }
@@ -107,10 +106,15 @@ export class FileService {
   private async handleLocalVideoFile(filePath: string): Promise<string> {
     try {
       const normalizedPath = path.normalize(filePath);
-      await fs.access(normalizedPath);
-      const buffer = await fs.readFile(normalizedPath);
+      const stat = await fs.stat(normalizedPath);
       const filename = path.basename(normalizedPath);
-      const mimeType = this.getMimeType(filename, buffer);
+
+      // Sniff the MIME type from the first bytes only - never read the whole
+      // file into memory (videos can be hundreds of MB).
+      const mimeType = this.getMimeType(
+        filename,
+        await this.readFileHeader(normalizedPath)
+      );
 
       // Fail fast if MIME type is unknown
       if (!mimeType.startsWith('video/')) {
@@ -119,22 +123,16 @@ export class FileService {
         );
       }
 
-      // Inline threshold: default 50MB for safe base64 transport (the Gemini
-      // API accepts inline payloads up to 100MB). GEMINI_FILES_API_THRESHOLD
-      // overrides it, as documented, so users can tune the inline/Files API
-      // cutoff for videos too. Read from process.env because ConfigService
-      // defaults the value to 10MB, which is an image-oriented default.
-      const inlineThreshold = process.env.GEMINI_FILES_API_THRESHOLD
-        ? parseInt(process.env.GEMINI_FILES_API_THRESHOLD, 10)
-        : 50 * 1024 * 1024;
-
-      if (buffer.length <= inlineThreshold) {
-        // Use inline binary data for videos within the threshold
-        return `data:${mimeType};base64,${buffer.toString('base64')}`;
-      } else {
-        // Use Files API for larger videos
-        return await this.uploadFile(buffer, filename, mimeType);
-      }
+      // Canonical single upload path: the Files API resumable protocol.
+      // The SDK streams the file from disk in 8MB chunks, so the same code
+      // path handles a 1MB clip and a 2GB recording (the Files API cap)
+      // with constant memory. No inline/upload branching by size.
+      return await this.uploadLocalFileToFilesApi(
+        normalizedPath,
+        filename,
+        mimeType,
+        stat.size
+      );
     } catch (error) {
       if (error instanceof FileUploadError) {
         throw error;
@@ -145,108 +143,80 @@ export class FileService {
     }
   }
 
-  private async handleRemoteVideoFile(videoUrl: string): Promise<string> {
-    const inlineThreshold = FileService.REMOTE_VIDEO_INLINE_THRESHOLD;
-    const timeoutMs = FileService.REMOTE_VIDEO_TIMEOUT_MS;
-    const decodedUrl = videoUrl.replace(/\\&/g, '&');
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    let response: Response | null = null;
-    let responseBody: (Readable & { destroy?: () => void }) | null = null;
-
+  /** Read only the first bytes of a file for MIME sniffing. */
+  private async readFileHeader(
+    filePath: string,
+    bytes = 4100
+  ): Promise<Buffer> {
+    const header = Buffer.alloc(bytes);
+    const handle = await fs.open(filePath, 'r');
     try {
-      response = await fetch(decodedUrl, {
-        method: 'GET',
-        signal: controller.signal,
-      });
-      responseBody = toNodeReadable(response.body);
-
-      if (!response.ok || !responseBody) {
-        responseBody?.destroy?.();
-        return videoUrl;
-      }
-
-
-      const contentLengthHeader = response.headers.get('content-length');
-      const contentLength = contentLengthHeader ? Number(contentLengthHeader) : null;
-      const filename = path.basename(
-        decodedUrl.split('?')[0].split('/').pop() || 'video.mp4'
-      );
-      const contentType = response.headers.get('content-type')?.split(';')[0];
-
-      if (contentLength !== null && Number.isFinite(contentLength)) {
-        if (contentLength >= inlineThreshold) {
-          responseBody.destroy?.();
-          return await this.uploadRemoteVideoStream(
-            decodedUrl,
-            filename,
-            contentType ?? null,
-            videoUrl
-          );
-        }
-      }
-
-      const streamBuffer = await this.readVideoStreamWithLimit(
-        responseBody,
-        inlineThreshold
-      );      if (!streamBuffer) {
-        return await this.uploadRemoteVideoStream(
-          decodedUrl,
-          filename,
-          contentType ?? null,
-          videoUrl
-        );
-      }
-
-      const mimeType =
-        contentType && contentType.startsWith('video/')
-          ? contentType
-          : this.getMimeType(filename, streamBuffer);
-
-      if (!mimeType.startsWith('video/')) {
-        return videoUrl;
-      }
-
-      return `data:${mimeType};base64,${streamBuffer.toString('base64')}`;
-    } catch {
-      return videoUrl;
+      const { bytesRead } = await handle.read(header, 0, bytes, 0);
+      return header.subarray(0, bytesRead);
     } finally {
-      responseBody?.destroy?.();
-      clearTimeout(timeoutId);
+      await handle.close();
     }
   }
 
-  private async readVideoStreamWithLimit(
-    stream: Readable & { destroy?: () => void },
-    limit: number
-  ): Promise<Buffer | null> {
-    const chunks: Buffer[] = [];
-    let totalSize = 0;
-
-    try {
-      for await (const chunk of stream as AsyncIterable<Buffer | string>) {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        totalSize += buffer.length;
-
-        if (totalSize > limit) {
-          stream.destroy?.();
-          return null;
-        }
-
-        chunks.push(buffer);
-      }
-
-      return Buffer.concat(chunks);
-    } catch {
-      stream.destroy?.();
-      return null;
+  /**
+   * Upload a local file to the provider's file storage, streaming from the
+   * path when the strategy supports it (Gemini Files API resumable upload).
+   */
+  private async uploadLocalFileToFilesApi(
+    filePath: string,
+    filename: string,
+    mimeType: string,
+    sizeBytes: number
+  ): Promise<string> {
+    const maxSize = this.getMaxFileSize(mimeType);
+    if (sizeBytes > maxSize) {
+      throw new FileSizeExceededError(sizeBytes, maxSize);
     }
+
+    if (!this.isSupportedFileType(mimeType)) {
+      throw new UnsupportedFileTypeError(
+        mimeType,
+        this.getSupportedFileTypes()
+      );
+    }
+
+    const uploadedFile = this.uploadStrategy.uploadFileFromPath
+      ? await this.uploadStrategy.uploadFileFromPath(
+          filePath,
+          filename,
+          mimeType
+        )
+      : // Fallback for strategies without path streaming (e.g. GCS)
+        await this.uploadStrategy.uploadFile(
+          await fs.readFile(filePath),
+          filename,
+          mimeType
+        );
+
+    const fileReference =
+      await this.uploadStrategy.getFileForAnalysis(uploadedFile);
+
+    return fileReference.type === 'file_uri'
+      ? fileReference.uri || ''
+      : fileReference.url || '';
+  }
+
+  private async handleRemoteVideoFile(videoUrl: string): Promise<string> {
+    // Canonical single upload path for remote videos of any size:
+    // stream the download to a temp file, then stream the temp file to the
+    // Files API (resumable, chunked). Constant memory, one download, no
+    // inline/upload branching by content length.
+    const decodedUrl = videoUrl.replace(/\\&/g, '&');
+    const filename = path.basename(
+      decodedUrl.split('?')[0].split('/').pop() || 'video.mp4'
+    );
+
+    return await this.uploadRemoteVideoStream(decodedUrl, filename, videoUrl);
   }
 
   private async uploadRemoteVideoStream(
     videoUrl: string,
     filename: string,
-    contentType: string | null,
     fallbackUrl: string
   ): Promise<string> {
     const timeoutMs = FileService.REMOTE_VIDEO_TIMEOUT_MS;
@@ -266,6 +236,12 @@ export class FileService {
       if (!bodyStream) {
         return fallbackUrl;
       }
+
+      const contentType = response.headers
+        .get('content-type')
+        ?.split(';')[0]
+        ?.trim();
+
       await new Promise<void>((resolve, reject) => {
         bodyStream.on('data', (chunk: Buffer | string) => {
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -286,17 +262,22 @@ export class FileService {
 
       bodyStream.destroy?.();
 
-      const buffer = await fs.readFile(tempPath);
+      const stat = await fs.stat(tempPath);
       const mimeType =
         contentType && contentType.startsWith('video/')
           ? contentType
-          : this.getMimeType(filename, buffer);
+          : this.getMimeType(filename, await this.readFileHeader(tempPath));
 
       if (!mimeType.startsWith('video/')) {
         return fallbackUrl;
       }
 
-      return await this.uploadFile(buffer, filename, mimeType);
+      return await this.uploadLocalFileToFilesApi(
+        tempPath,
+        filename,
+        mimeType,
+        stat.size
+      );
     } catch {
       return fallbackUrl;
     } finally {
