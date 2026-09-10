@@ -17,6 +17,7 @@ import type {
   ModelCapabilities,
   ProviderInfo,
   GeminiFileMetadata,
+  TranscriptionOptions,
 } from '../../types/Providers.js';
 import {
   ProviderError,
@@ -37,6 +38,11 @@ import {
   loadAudioSource,
   getAudioMimeType,
 } from '../../utils/audioSourceHandler.js';
+import {
+  loadDocumentSource,
+  getDocumentMimeType,
+} from '../../utils/documentSourceHandler.js';
+import { ConfigService } from '../../services/ConfigService.js';
 import type {
   EditImageInput,
   EditImageOptions,
@@ -669,8 +675,249 @@ export class GeminiProvider extends BaseVisionProvider {
     }
   }
 
+  /**
+   * Resolve an audio source (files/ ref, local path, data URI, or URL) to a
+   * fileData content part via the canonical Files API upload path.
+   */
+  private async resolveAudioContent(audioSource: string): Promise<{
+    content: any;
+    fileSize?: number;
+    processingDuration: number;
+  }> {
+    let processingDuration = 0;
+
+    if (isFileReferenceSource(audioSource)) {
+      // Files API reference: resolve the real mimeType from metadata
+      let mimeType = 'audio/mpeg';
+      try {
+        const fileId = `files/${audioSource.split('/').pop()}`;
+        const metadata = await this.getFileMetadata(fileId);
+        if (metadata.mimeType) mimeType = metadata.mimeType;
+      } catch {
+        // keep fallback
+      }
+      return {
+        content: { fileData: { fileUri: audioSource, mimeType } },
+        processingDuration,
+      };
+    }
+
+    // Canonical single upload path: everything goes through the Files
+    // API regardless of size. Local files stream from disk (resumable,
+    // chunked); data URIs and remote URLs upload their fetched bytes.
+    let uploadedFile: UploadedFile;
+    let fileSize: number | undefined;
+    const isLocalFile =
+      !audioSource.startsWith('data:') && !/^https?:\/\//i.test(audioSource);
+
+    if (isLocalFile) {
+      const stat = await fs.stat(audioSource).catch(() => {
+        throw new FileNotFoundError(audioSource);
+      });
+      fileSize = stat.size;
+      const { result, duration } = await this.measureAsync(async () => {
+        return await this.uploadFileFromPath(
+          audioSource,
+          getAudioMimeType(audioSource),
+          path.basename(audioSource)
+        );
+      });
+      uploadedFile = result;
+      processingDuration += duration;
+    } else {
+      const { result: loaded, duration: loadDuration } =
+        await this.measureAsync(async () => loadAudioSource(audioSource));
+      processingDuration += loadDuration;
+      fileSize = loaded.buffer.length;
+
+      const { result, duration: uploadDuration } = await this.measureAsync(
+        async () => {
+          return await this.uploadFile(
+            loaded.buffer,
+            loaded.filename,
+            loaded.mimeType
+          );
+        }
+      );
+      uploadedFile = result;
+      processingDuration += uploadDuration;
+    }
+
+    const fileId = uploadedFile.uri!.split('/').pop()!;
+    await this.waitForFileProcessing(fileId);
+    return {
+      content: {
+        fileData: {
+          fileUri: uploadedFile.uri!,
+          mimeType: uploadedFile.mimeType,
+        },
+      },
+      fileSize,
+      processingDuration,
+    };
+  }
+
+  /**
+   * Extract response text, including audioTranscription parts returned by
+   * dedicated transcription models (gemini-3.5-transcribe). Segments are
+   * prefixed with speaker labels when diarization produced them.
+   */
+  private extractTextWithTranscription(response: any): string {
+    const parts = response.candidates?.[0]?.content?.parts || [];
+    const segments: string[] = [];
+    for (const part of parts) {
+      if (part.text) {
+        segments.push(part.text);
+      } else if (part.audioTranscription?.text) {
+        const t = part.audioTranscription;
+        const startOffset = t.words?.[0]?.startOffset;
+        const prefix = [
+          startOffset ? `[${startOffset}]` : null,
+          t.speakerLabel ? `[${t.speakerLabel}]` : null,
+        ]
+          .filter(Boolean)
+          .join(' ');
+        segments.push(prefix ? `${prefix} ${t.text}` : t.text);
+      }
+    }
+    return segments.join('\n') || response.text || '';
+  }
+
   async analyzeAudio(
     audioSource: string,
+    prompt: string,
+    options?: AnalysisOptions
+  ): Promise<AnalysisResult> {
+    try {
+      const { content, fileSize, processingDuration } =
+        await this.resolveAudioContent(audioSource);
+
+      const model = this.resolveModelForFunction(
+        'video',
+        options?.functionName
+      );
+
+      const { result: response, duration: analysisDuration } =
+        await this.measureAsync(async () => {
+          return await this.client.models.generateContent({
+            model,
+            contents: [content, { text: prompt }],
+            config: this.buildConfigWithOptions(
+              'video',
+              options?.functionName,
+              options
+            ),
+          });
+        });
+
+      const text = this.extractTextWithTranscription(response);
+      const usage = response.usageMetadata;
+
+      return this.createAnalysisResult(
+        text,
+        model,
+        usage
+          ? {
+            promptTokenCount: usage.promptTokenCount || 0,
+            candidatesTokenCount: usage.candidatesTokenCount || 0,
+            totalTokenCount: usage.totalTokenCount || 0,
+          }
+          : undefined,
+        processingDuration + analysisDuration,
+        content.fileData?.mimeType || content.inlineData?.mimeType,
+        fileSize,
+        response.modelVersion,
+        response.responseId
+      );
+    } catch (error) {
+      throw this.handleError(error, 'audio analysis');
+    }
+  }
+
+  async transcribeAudio(
+    audioSource: string,
+    options?: TranscriptionOptions
+  ): Promise<AnalysisResult> {
+    try {
+      const { content, fileSize, processingDuration } =
+        await this.resolveAudioContent(audioSource);
+
+      const model =
+        options?.model ?? this.configService.getTranscribeAudioModel();
+
+      // SMART mode is incompatible with timestamps/diarization per the API
+      let mode = options?.mode;
+      if (mode === 'smart' && (options?.diarization || options?.wordTimestamps)) {
+        console.error(
+          '[GeminiProvider] transcription mode "smart" is incompatible with diarization/wordTimestamps; using "verbatim"'
+        );
+        mode = 'verbatim';
+      }
+
+      // The API also rejects customVocabulary combined with word timestamps
+      let customVocabulary = options?.customVocabulary;
+      if (customVocabulary?.length && options?.wordTimestamps) {
+        console.error(
+          '[GeminiProvider] customVocabulary is incompatible with wordTimestamps; dropping customVocabulary for this request'
+        );
+        customVocabulary = undefined;
+      }
+
+      const transcriptionConfig: Record<string, unknown> = {};
+      if (mode) {
+        transcriptionConfig.mode = mode === 'smart' ? 'SMART' : 'VERBATIM';
+      }
+      if (options?.diarization) transcriptionConfig.diarization = true;
+      if (options?.wordTimestamps) transcriptionConfig.wordTimestamp = true;
+      if (options?.languageCodes?.length) {
+        transcriptionConfig.languageCodes = options.languageCodes;
+      }
+      if (customVocabulary?.length) {
+        transcriptionConfig.customVocabulary = customVocabulary;
+      }
+
+      const config: any = {};
+      if (Object.keys(transcriptionConfig).length > 0) {
+        config.audioTranscriptionConfig = transcriptionConfig;
+      }
+      const safetySettings = this.configService.getSafetySettings();
+      if (safetySettings) config.safetySettings = safetySettings;
+
+      const { result: response, duration: analysisDuration } =
+        await this.measureAsync(async () => {
+          return await this.client.models.generateContent({
+            model,
+            contents: [content],
+            config: Object.keys(config).length > 0 ? config : undefined,
+          });
+        });
+
+      const text = this.extractTextWithTranscription(response);
+      const usage = response.usageMetadata;
+
+      return this.createAnalysisResult(
+        text,
+        model,
+        usage
+          ? {
+            promptTokenCount: usage.promptTokenCount || 0,
+            candidatesTokenCount: usage.candidatesTokenCount || 0,
+            totalTokenCount: usage.totalTokenCount || 0,
+          }
+          : undefined,
+        processingDuration + analysisDuration,
+        content.fileData?.mimeType,
+        fileSize,
+        response.modelVersion,
+        response.responseId
+      );
+    } catch (error) {
+      throw this.handleError(error, 'audio transcription');
+    }
+  }
+
+  async analyzeDocument(
+    documentSource: string,
     prompt: string,
     options?: AnalysisOptions
   ): Promise<AnalysisResult> {
@@ -679,42 +926,43 @@ export class GeminiProvider extends BaseVisionProvider {
       let fileSize: number | undefined;
       let processingDuration = 0;
 
-      if (isFileReferenceSource(audioSource)) {
+      if (isFileReferenceSource(documentSource)) {
         // Files API reference: resolve the real mimeType from metadata
-        let mimeType = 'audio/mpeg';
+        let mimeType = 'application/pdf';
         try {
-          const fileId = `files/${audioSource.split('/').pop()}`;
+          const fileId = `files/${documentSource.split('/').pop()}`;
           const metadata = await this.getFileMetadata(fileId);
           if (metadata.mimeType) mimeType = metadata.mimeType;
         } catch {
           // keep fallback
         }
-        content = { fileData: { fileUri: audioSource, mimeType } };
+        content = { fileData: { fileUri: documentSource, mimeType } };
       } else {
-        // Canonical single upload path: everything goes through the Files
-        // API regardless of size. Local files stream from disk (resumable,
-        // chunked); data URIs and remote URLs upload their fetched bytes.
+        // Canonical single upload path: Files API for every size.
         let uploadedFile: UploadedFile;
         const isLocalFile =
-          !audioSource.startsWith('data:') && !/^https?:\/\//i.test(audioSource);
+          !documentSource.startsWith('data:') &&
+          !/^https?:\/\//i.test(documentSource);
 
         if (isLocalFile) {
-          const stat = await fs.stat(audioSource).catch(() => {
-            throw new FileNotFoundError(audioSource);
+          const stat = await fs.stat(documentSource).catch(() => {
+            throw new FileNotFoundError(documentSource);
           });
           fileSize = stat.size;
           const { result, duration } = await this.measureAsync(async () => {
             return await this.uploadFileFromPath(
-              audioSource,
-              getAudioMimeType(audioSource),
-              path.basename(audioSource)
+              documentSource,
+              getDocumentMimeType(documentSource),
+              path.basename(documentSource)
             );
           });
           uploadedFile = result;
           processingDuration += duration;
         } else {
           const { result: loaded, duration: loadDuration } =
-            await this.measureAsync(async () => loadAudioSource(audioSource));
+            await this.measureAsync(async () =>
+              loadDocumentSource(documentSource)
+            );
           processingDuration += loadDuration;
           fileSize = loaded.buffer.length;
 
@@ -741,8 +989,18 @@ export class GeminiProvider extends BaseVisionProvider {
         };
       }
 
+      // PDF pages are tokenized like images: part-level mediaResolution
+      // applies (ultra_high included, for dense tables / small print).
+      const partMediaResolution = this.getPartMediaResolution(
+        'image',
+        options
+      );
+      if (partMediaResolution) {
+        content.mediaResolution = partMediaResolution;
+      }
+
       const model = this.resolveModelForFunction(
-        'video',
+        'image',
         options?.functionName
       );
 
@@ -752,7 +1010,7 @@ export class GeminiProvider extends BaseVisionProvider {
             model,
             contents: [content, { text: prompt }],
             config: this.buildConfigWithOptions(
-              'video',
+              'image',
               options?.functionName,
               options
             ),
@@ -779,8 +1037,51 @@ export class GeminiProvider extends BaseVisionProvider {
         response.responseId
       );
     } catch (error) {
-      throw this.handleError(error, 'audio analysis');
+      throw this.handleError(error, 'document analysis');
     }
+  }
+
+  /** Resolve a video source to a fileData part for video-to-image editing. */
+  private async resolveVideoPartForEdit(videoSource: string): Promise<any> {
+    if (isYouTubeUrl(videoSource)) {
+      return { fileData: { fileUri: videoSource, mimeType: 'video/mp4' } };
+    }
+    if (isFileReferenceSource(videoSource)) {
+      let mimeType = 'video/mp4';
+      try {
+        const fileId = `files/${videoSource.split('/').pop()}`;
+        const metadata = await this.getFileMetadata(fileId);
+        if (metadata.mimeType) mimeType = metadata.mimeType;
+      } catch {
+        // keep fallback
+      }
+      return { fileData: { fileUri: videoSource, mimeType } };
+    }
+
+    // Local file path: canonical streaming Files API upload
+    await fs.stat(videoSource).catch(() => {
+      throw new FileNotFoundError(videoSource);
+    });
+    const ext = path.extname(videoSource).replace('.', '').toLowerCase();
+    const mimeByExt: Record<string, string> = {
+      mp4: 'video/mp4',
+      mov: 'video/quicktime',
+      avi: 'video/x-msvideo',
+      webm: 'video/webm',
+      mkv: 'video/x-matroska',
+      mpeg: 'video/mpeg',
+      mpg: 'video/mpg',
+    };
+    const uploaded = await this.uploadFileFromPath(
+      videoSource,
+      mimeByExt[ext] || 'video/mp4',
+      path.basename(videoSource)
+    );
+    const fileId = uploaded.uri!.split('/').pop()!;
+    await this.waitForFileProcessing(fileId);
+    return {
+      fileData: { fileUri: uploaded.uri!, mimeType: uploaded.mimeType },
+    };
   }
 
   async editImage(
@@ -789,7 +1090,18 @@ export class GeminiProvider extends BaseVisionProvider {
     options?: EditImageOptions
   ): Promise<EditImageResult> {
     try {
-      const model = this.configService.getEditImageModel();
+      let model = this.configService.getEditImageModel();
+
+      // Video-to-image is exclusive to gemini-3.1-flash-image
+      if (
+        options?.videoSource &&
+        model !== ConfigService.VIDEO_TO_IMAGE_MODEL
+      ) {
+        console.error(
+          `[GeminiProvider] video-to-image requires ${ConfigService.VIDEO_TO_IMAGE_MODEL}; overriding EDIT_IMAGE_MODEL (${model}) for this request`
+        );
+        model = ConfigService.VIDEO_TO_IMAGE_MODEL;
+      }
 
       // Image models use a dedicated config: responseModalities + imageConfig.
       // Sampling/thinking/mediaResolution settings from the analysis path do
@@ -806,9 +1118,15 @@ export class GeminiProvider extends BaseVisionProvider {
         };
       }
 
-      const parts: any[] = inputs.map(input => ({
-        inlineData: { mimeType: input.mimeType, data: input.data },
-      }));
+      const parts: any[] = [];
+      if (options?.videoSource) {
+        parts.push(await this.resolveVideoPartForEdit(options.videoSource));
+      }
+      parts.push(
+        ...inputs.map(input => ({
+          inlineData: { mimeType: input.mimeType, data: input.data },
+        }))
+      );
       parts.push({ text: prompt });
 
       const { result: response, duration } = await this.measureAsync(
@@ -1081,7 +1399,7 @@ export class GeminiProvider extends BaseVisionProvider {
 
         if (fileMetadata.state === 'FAILED') {
           throw new FileUploadError(
-            `File processing failed: Unknown error`,
+            `The Files API could not process this file (state FAILED). The file may be corrupt or use an unsupported codec/container variant. For videos, re-encoding usually fixes it: ffmpeg -i input -c:v libx264 -pix_fmt yuv420p -movflags +faststart output.mp4`,
             'gemini'
           );
         }

@@ -9,10 +9,10 @@ export async function runEditImage(
 ): Promise<void> {
   const { positional, options } = parseArgs(args);
 
-  if (positional.length < 1) {
-    console.error('Error: At least one image source required');
+  if (positional.length < 1 && !options.video) {
+    console.error('Error: At least one image source (or --video) required');
     console.error(
-      'Usage: ai-vision edit-image <source...> --prompt <text> [--output <path>] [--aspect-ratio <r>] [--image-size 512|1K|2K|4K]'
+      'Usage: ai-vision edit-image <source...> --prompt <text> [--video <videoSource>] [--output <path>] [--aspect-ratio <r>] [--image-size 512|1K|2K|4K]'
     );
     process.exit(1);
   }
@@ -32,6 +32,7 @@ export async function runEditImage(
     const result = await edit_image(
       {
         imageSources: positional,
+        videoSource: options.video,
         prompt,
         outputFilePath: options.output,
         aspectRatio: options['aspect-ratio'],

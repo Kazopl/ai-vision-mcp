@@ -26,3 +26,11 @@ export {
 } from './extract_video_frame.js';
 export { analyze_audio, type AnalyzeAudioArgs } from './analyze_audio.js';
 export { edit_image, type EditImageArgs } from './edit_image.js';
+export {
+  analyze_document,
+  type AnalyzeDocumentArgs,
+} from './analyze_document.js';
+export {
+  transcribe_audio,
+  type TranscribeAudioArgs,
+} from './transcribe_audio.js';

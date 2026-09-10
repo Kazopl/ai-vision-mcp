@@ -5,8 +5,10 @@ A powerful Model Context Protocol (MCP) server that provides AI-powered image an
 ## Features
 
 - **Dual Provider Support**: Choose between Google Gemini API and Vertex AI
-- **Multimodal Analysis**: Support for both image and video content analysis
-- **Flexible File Handling**: Upload via multiple methods (URLs, local files, base64)
+- **Multimodal Analysis**: Images, videos (agentic understanding), audio, and documents (PDF tables/charts/scans)
+- **Dedicated Transcription**: gemini-3.5-transcribe with word timestamps, speaker diarization, 85+ languages
+- **Image Editing & Generation**: Nano Banana editing, annotation, composition, and video-to-image thumbnails
+- **Flexible File Handling**: One canonical streaming upload path (Files API) for any size up to 2GB
 - **Storage Integration**: Built-in Google Cloud Storage support
 - **Comprehensive Validation**: Zod-based data validation throughout
 - **Error Handling**: Robust error handling with retry logic and circuit breakers
@@ -479,7 +481,9 @@ Verified on a 1080p screencast with 10px text: video-level analysis at `high` re
 
 ### 7) `edit_image`
 
-Edits, annotates, or composes images using Gemini native image generation (Nano Banana 2, `gemini-3.1-flash-image` by default via `EDIT_IMAGE_MODEL`). Accepts 1-14 input images and returns the edited image (file + inline preview).
+Edits, annotates, or composes images using Gemini native image generation (Nano Banana 2, `gemini-3.1-flash-image` by default via `EDIT_IMAGE_MODEL`; `gemini-3-pro-image` for highest quality, `gemini-3.1-flash-lite-image` for lowest latency). Accepts 1-14 input images and returns the edited image (file + inline preview).
+
+**Video-to-image:** pass `videoSource` (YouTube URL, local video path, or `files/` reference) to generate thumbnails, movie posters, or summary infographics grounded in actual video content - e.g. "generate a clean 16:9 thumbnail with a catchy title". Exclusive to `gemini-3.1-flash-image` (auto-selected when `videoSource` is set); `imageSources` becomes optional.
 
 **Typical uses:**
 - Write or draw on an image: "Add a red arrow pointing at the Save button and write 'CLICK HERE'"
@@ -507,7 +511,33 @@ Analyzes audio files using Gemini's native audio understanding: transcription (a
 
 All audio uploads go through the Gemini Files API (streamed from disk for local files) regardless of size. Vertex AI needs a `gs://` URI for large files.
 
-### 9) `start_video_analysis` + `get_analysis_result`
+### 9) `transcribe_audio`
+
+Dedicated speech-to-text using `gemini-3.5-transcribe` (GA Aug 2026), purpose-built for transcription accuracy across 85+ auto-detected languages. Prefer this over `analyze_audio` for verbatim transcripts; use `analyze_audio` for questions and summaries about audio.
+
+**Parameters:**
+- `audioSource` (string): URL, base64 data URI, local file path, or `files/` reference
+- `options` (object, optional):
+  - `diarization` (boolean) - label speakers (`spk_1`, `spk_2`, ...)
+  - `wordTimestamps` (boolean) - word-level timing; segments get start-offset prefixes
+  - `mode` (`verbatim` default | `smart`) - smart mode removes filler words and adds formatting (incompatible with diarization/timestamps)
+  - `languageCodes` (string[]) - BCP-47 hints, e.g. `["en-US", "ro-RO"]`
+  - `customVocabulary` (string[]) - up to 1000 terms to bias recognition (names, jargon; incompatible with `wordTimestamps`)
+
+Override the model with the `TRANSCRIBE_AUDIO_MODEL` env var.
+
+### 10) `analyze_document`
+
+Native document understanding: PDFs are processed visually (layouts, tables, charts, diagrams, handwriting, scanned pages - up to 1000 pages), plus text formats (txt, md, html, csv, xml, rtf, json). Each PDF page costs ~258 tokens at default resolution.
+
+**Parameters:**
+- `documentSource` (string): URL, base64 data URI, local file path, or `files/` reference
+- `prompt` (string): e.g. "Extract all invoice line items as JSON", "What are the payment terms?"
+- `options` (object, optional): `mediaResolution` (use `high`/`ultra_high` for dense tables and small print), `thinkingLevel`, `maxTokens`, `seed`
+
+Documents upload via the same canonical streaming Files API path as video/audio (any size, 48h reuse via the returned `files/` reference). Override the model with `ANALYZE_DOCUMENT_MODEL` (defaults to the image model).
+
+### 11) `start_video_analysis` + `get_analysis_result`
 
 The async-job pattern for videos whose upload + processing exceeds MCP client tool timeouts (Cursor enforces ~60 seconds per tool call, and progress notifications do not reliably reset it in TypeScript-SDK-based clients).
 
@@ -518,7 +548,7 @@ Measured on a 377MB, 5-minute 240fps screen recording: job completes in ~160s (1
 
 All long-running tools also emit MCP `notifications/progress` heartbeats every 8 seconds (when the client sends a `progressToken`), which keeps calls alive on clients that reset their timeout on progress.
 
-### 10) `analyze_video`
+### 12) `analyze_video`
 
 **Agentic video understanding (default).** On supported models (Gemini 3.6+, 3.5-flash-lite) the model navigates the video on demand - searching the transcript and fetching only the frames it needs - instead of statically ingesting every frame. Measured on a 45s video: 40 prompt tokens agentic vs 13,573 static, with the same answer quality; Google reports up to 66% cost reduction and better accuracy on long videos. Control it with the `processing` option (`agentic`/`static`) or the `VIDEO_PROCESSING` env var. Using `videoMetadata` (clipping/fps) automatically switches the request to static, since the API does not allow combining them; unsupported models also fall back to static.
 

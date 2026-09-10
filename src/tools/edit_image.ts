@@ -29,15 +29,16 @@ export async function edit_image(
   imageProvider: VisionProvider
 ): Promise<EditImageResponse> {
   try {
-    if (!args.imageSources || args.imageSources.length === 0) {
+    const imageSources = args.imageSources ?? [];
+    if (imageSources.length === 0 && !args.videoSource) {
       throw new VisionError(
-        'imageSources is required (1-14 images)',
+        'Provide imageSources (1-14 images), a videoSource, or both',
         'MISSING_ARGUMENT'
       );
     }
-    if (args.imageSources.length > MAX_INPUT_IMAGES) {
+    if (imageSources.length > MAX_INPUT_IMAGES) {
       throw new VisionError(
-        `Too many input images: ${args.imageSources.length} (the model supports up to ${MAX_INPUT_IMAGES})`,
+        `Too many input images: ${imageSources.length} (the model supports up to ${MAX_INPUT_IMAGES})`,
         'INVALID_ARGUMENT'
       );
     }
@@ -52,16 +53,17 @@ export async function edit_image(
     }
 
     const inputs = await Promise.all(
-      args.imageSources.map(source => loadEditImageInput(source))
+      imageSources.map(source => loadEditImageInput(source))
     );
 
     console.error(
-      `[edit_image] Editing with ${inputs.length} input image(s)...`
+      `[edit_image] Editing with ${inputs.length} input image(s)${args.videoSource ? ' + 1 video' : ''}...`
     );
 
     const result = await imageProvider.editImage(inputs, args.prompt, {
       aspectRatio: args.aspectRatio,
       imageSize: args.imageSize,
+      videoSource: args.videoSource,
     });
 
     if (result.images.length === 0) {

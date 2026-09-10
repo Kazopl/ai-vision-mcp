@@ -24,6 +24,22 @@ export type {
   ProviderInfo,
 } from './Analysis.js';
 
+/** Options for the dedicated transcribe_audio tool (gemini-3.5-transcribe). */
+export interface TranscriptionOptions {
+  /** Label speakers (Speaker 1, Speaker 2, ...). Incompatible with mode 'smart'. */
+  diarization?: boolean;
+  /** Word-level timestamps. Incompatible with mode 'smart'. */
+  wordTimestamps?: boolean;
+  /** 'verbatim' (default) or 'smart' (removes filler words, adds formatting). */
+  mode?: 'verbatim' | 'smart';
+  /** BCP-47 language hints (auto-detect when omitted), e.g. ['en-US', 'ro-RO']. */
+  languageCodes?: string[];
+  /** Up to 1000 terms to bias recognition (names, jargon, acronyms). */
+  customVocabulary?: string[];
+  /** Override the transcription model. */
+  model?: string;
+}
+
 export interface VisionProvider {
   // Core capabilities
   analyzeImage(
@@ -41,6 +57,17 @@ export interface VisionProvider {
     audioSource: string,
     prompt: string,
     options?: AnalysisOptions
+  ): Promise<AnalysisResult>;
+  /** Optional: document understanding (PDF layouts, tables, charts + text docs) */
+  analyzeDocument?(
+    documentSource: string,
+    prompt: string,
+    options?: AnalysisOptions
+  ): Promise<AnalysisResult>;
+  /** Optional: dedicated speech-to-text (word timestamps, diarization) */
+  transcribeAudio?(
+    audioSource: string,
+    options?: TranscriptionOptions
   ): Promise<AnalysisResult>;
   /** Optional: image editing/generation via Nano Banana image models */
   editImage?(

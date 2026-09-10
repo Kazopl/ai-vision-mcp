@@ -292,8 +292,9 @@ describe('Integration Tests', () => {
     testOrSkip(
       'should upload and analyze local video file with offsets',
       async () => {
-        // Download a small sample video first (W3Schools test video - ~10 sec)
-        const sampleVideoUrl = 'https://www.w3schools.com/html/mov_bbb.mp4';
+        // Google-hosted sample video (16MB; W3Schools now bot-blocks downloads)
+        const sampleVideoUrl =
+          'https://storage.googleapis.com/cloud-samples-data/generative-ai/video/animals.mp4';
         const tempVideoPath = '/tmp/e2e-test-video.mp4';
 
         // Download video

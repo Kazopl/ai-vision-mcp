@@ -52,11 +52,20 @@ const visionProvider = {
   supportsVideo: vi.fn(),
 } as any;
 
+/** Minimal valid-looking MP4 header (ftyp box) + payload for sanity checks */
+function fakeMp4Buffer(payload = 'video-data'): Buffer {
+  return Buffer.concat([
+    Buffer.from([0x00, 0x00, 0x00, 0x18]),
+    Buffer.from('ftypmp42'),
+    Buffer.from(payload),
+  ]);
+}
+
 function createResponse({
   ok = true,
   contentLength,
   contentType = 'video/mp4',
-  bodyChunks = [Buffer.from('small-video-data')],
+  bodyChunks = [fakeMp4Buffer()],
 }: {
   ok?: boolean;
   contentLength?: string;
@@ -119,7 +128,7 @@ describe('FileService.handleVideoSource', () => {
       createResponse({
         contentLength: '16',
         contentType: 'video/mp4',
-        bodyChunks: [Buffer.from('small-video-data')],
+        bodyChunks: [fakeMp4Buffer('small-video-data')],
       })
     );
     visionProvider.uploadFileFromPath.mockResolvedValue(uploadedFileFixture);
@@ -148,7 +157,7 @@ describe('FileService.handleVideoSource', () => {
       createResponse({
         contentLength: String(500 * 1024 * 1024),
         contentType: 'video/mp4',
-        bodyChunks: [Buffer.alloc(1024, 1)],
+        bodyChunks: [fakeMp4Buffer('x'.repeat(1024))],
       })
     );
     visionProvider.uploadFileFromPath.mockResolvedValue(uploadedFileFixture);
@@ -167,7 +176,7 @@ describe('FileService.handleVideoSource', () => {
     fetchMock.mockResolvedValue(
       createResponse({
         contentType: 'video/quicktime',
-        bodyChunks: [Buffer.from('large-video')],
+        bodyChunks: [fakeMp4Buffer('large-video')],
       })
     );
     visionProvider.uploadFileFromPath.mockResolvedValue({
@@ -203,7 +212,7 @@ describe('FileService.handleVideoSource', () => {
   test('uploads remote videos when content-length is missing', async () => {
     fetchMock.mockResolvedValue(
       createResponse({
-        bodyChunks: [Buffer.from('tiny-video')],
+        bodyChunks: [fakeMp4Buffer('tiny-video')],
       })
     );
     visionProvider.uploadFileFromPath.mockResolvedValue(uploadedFileFixture);

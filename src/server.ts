@@ -20,6 +20,8 @@ import {
   audit_design,
   extract_video_frame,
   edit_image,
+  analyze_document,
+  transcribe_audio,
 } from './tools/index.js';
 import { VisionError } from './types/Errors.js';
 import { startJob, getJob } from './utils/jobStore.js';
@@ -865,14 +867,20 @@ server.registerTool<any, any>(
   {
     title: 'Edit Image',
     description:
-      'Edit, annotate, or compose images with Gemini native image generation (Nano Banana 2). Accepts 1-14 input images: pass one image to edit or write/draw on it ("add a red arrow pointing at the login button", "write APPROVED across the top"); pass two to highlight before/after differences ("mark every visual difference between image 1 and image 2 with red circles on image 2"); pass several to compose them. Annotated inputs work as spatial instructions (a box drawn on a reference copy tells the model where to act). Returns the edited image file plus an inline preview. Note: the model re-renders the whole image, so unedited areas are close but not pixel-identical.',
+      'Edit, annotate, or compose images with Gemini native image generation (Nano Banana 2). Accepts 1-14 input images: pass one image to edit or write/draw on it ("add a red arrow pointing at the login button", "write APPROVED across the top"); pass two to highlight before/after differences ("mark every visual difference between image 1 and image 2 with red circles on image 2"); pass several to compose them. Also supports video-to-image via videoSource (YouTube URL or local video): generate thumbnails, movie posters, or summary infographics from video content. Annotated inputs work as spatial instructions (a box drawn on a reference copy tells the model where to act). Returns the edited image file plus an inline preview. Note: the model re-renders the whole image, so unedited areas are close but not pixel-identical.',
     inputSchema: z.object({
       imageSources: z
         .array(z.string())
-        .min(1)
         .max(14)
+        .optional()
         .describe(
-          'Input images (1-14) - URLs, base64 data URIs, or local file paths. Reference them in the prompt by order: "image 1", "image 2".'
+          'Input images (0-14) - URLs, base64 data URIs, or local file paths. Reference them in the prompt by order: "image 1", "image 2". Optional when videoSource is provided.'
+        ),
+      videoSource: z
+        .string()
+        .optional()
+        .describe(
+          'Video-to-image: a YouTube URL, local video file path, or files/ reference used as visual context (e.g. "generate a 16:9 thumbnail for this video"). Uses gemini-3.1-flash-image automatically.'
         ),
       prompt: z
         .string()
@@ -914,13 +922,30 @@ server.registerTool<any, any>(
     }),
   },
   async (args: any, _extra: any) => {
-    const { imageSources, prompt, outputFilePath, aspectRatio, imageSize } =
-      args;
+    const {
+      imageSources,
+      videoSource,
+      prompt,
+      outputFilePath,
+      aspectRatio,
+      imageSize,
+    } = args;
     try {
       const { config, imageProvider } = getServices();
 
       const result = await withProgressHeartbeat(_extra, 'Editing image', () =>
-        edit_image({ imageSources, prompt, outputFilePath, aspectRatio, imageSize }, config, imageProvider)
+        edit_image(
+          {
+            imageSources,
+            videoSource,
+            prompt,
+            outputFilePath,
+            aspectRatio,
+            imageSize,
+          },
+          config,
+          imageProvider
+        )
       );
 
       const inlineImage = result.images[0]
@@ -1048,6 +1073,203 @@ server.registerTool<any, any>(
             type: 'text' as const,
             text: JSON.stringify(
               { error: true, message: errorMessage, tool: 'analyze_audio' },
+              null,
+              2
+            ),
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Register transcribe_audio tool (dedicated speech-to-text model)
+server.registerTool<any, any>(
+  'transcribe_audio',
+  {
+    title: 'Transcribe Audio (dedicated STT)',
+    description:
+      'High-accuracy speech-to-text using the dedicated gemini-3.5-transcribe model: word-level timestamps, speaker diarization (speaker labels), custom vocabulary biasing (up to 1000 terms), and 85+ auto-detected languages. Use this for verbatim transcripts; use analyze_audio for questions/summaries about audio. Sources: URL, base64 data URI, or local file path (mp3, wav, aac, flac, ogg, aiff, m4a).',
+    inputSchema: z.object({
+      audioSource: z
+        .string()
+        .describe(
+          'Audio source - URL, base64 data URI (data:audio/...), local file path, or files/ reference'
+        ),
+      options: z
+        .object({
+          diarization: z
+            .boolean()
+            .optional()
+            .describe(
+              'Label speakers (spk_1, spk_2, ...). Incompatible with mode "smart".'
+            ),
+          wordTimestamps: z
+            .boolean()
+            .optional()
+            .describe(
+              'Include word-level timing; segments get a start-offset prefix. Incompatible with mode "smart".'
+            ),
+          mode: z
+            .enum(['verbatim', 'smart'])
+            .optional()
+            .describe(
+              '"verbatim" (default, exact words) or "smart" (removes filler words, adds paragraphs/formatting)'
+            ),
+          languageCodes: z
+            .array(z.string())
+            .optional()
+            .describe(
+              'BCP-47 language hints, e.g. ["en-US", "ro-RO"]. Auto-detected when omitted.'
+            ),
+          customVocabulary: z
+            .array(z.string())
+            .optional()
+            .describe(
+              'Terms to bias recognition toward: names, jargon, acronyms (up to 1000). Incompatible with wordTimestamps.'
+            ),
+        })
+        .optional(),
+    }),
+  },
+  async (args: any, _extra: any) => {
+    const { audioSource, options } = args;
+    try {
+      const { config, videoProvider } = getServices();
+
+      const result = await withProgressHeartbeat(
+        _extra,
+        'Transcribing audio',
+        () => transcribe_audio({ audioSource, options }, config, videoProvider)
+      );
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      void logger.error(
+        { msg: 'Error executing transcribe_audio tool', error: String(error) },
+        'tools/transcribe_audio'
+      );
+
+      let errorMessage = 'An unknown error occurred';
+      if (error instanceof VisionError) {
+        errorMessage = `${error.name}: ${error.message}`;
+        if (error.provider) {
+          errorMessage += ` (Provider: ${error.provider})`;
+        }
+      } else if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              { error: true, message: errorMessage, tool: 'transcribe_audio' },
+              null,
+              2
+            ),
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Register analyze_document tool (PDF + text document understanding)
+server.registerTool<any, any>(
+  'analyze_document',
+  {
+    title: 'Analyze Document',
+    description:
+      'Analyze a document with Gemini native document vision: PDFs are understood visually (layouts, tables, charts, diagrams, handwriting, scanned pages - up to 1000 pages), plus text formats (txt, md, html, csv, xml, rtf, json). Great for extracting structured data, summarizing reports, comparing contract clauses, or answering questions about specs. Sources: URL, base64 data URI, local file path, or files/ reference. Each PDF page costs ~258 tokens at default resolution.',
+    inputSchema: z.object({
+      documentSource: z
+        .string()
+        .describe(
+          'Document source - URL, base64 data URI (data:application/pdf;base64,...), local file path, or files/ reference from a previous upload'
+        ),
+      prompt: z
+        .string()
+        .describe(
+          'What to do with the document, e.g. "Extract all invoice line items as JSON", "Summarize section 3", "What are the payment terms?"'
+        ),
+      options: z
+        .object({
+          temperature: z.number().min(0).max(2).optional(),
+          maxTokens: z.number().int().min(1).max(65536).optional(),
+          mediaResolution: z
+            .enum(['low', 'medium', 'high', 'ultra_high'])
+            .optional()
+            .describe(
+              'Token resolution per PDF page. Use "high" or "ultra_high" for dense tables and small print.'
+            ),
+          thinkingLevel: z
+            .enum(['minimal', 'low', 'medium', 'high'])
+            .optional()
+            .describe(
+              'Reasoning depth (Gemini 3+ models only). Raise for complex cross-page analysis.'
+            ),
+          seed: z
+            .number()
+            .int()
+            .optional()
+            .describe('Best-effort reproducibility seed'),
+        })
+        .optional(),
+    }),
+  },
+  async (args: any, _extra: any) => {
+    const { documentSource, prompt, options } = args;
+    try {
+      const { config, imageProvider } = getServices();
+
+      const result = await withProgressHeartbeat(
+        _extra,
+        'Analyzing document',
+        () =>
+          analyze_document({ documentSource, prompt, options }, config, imageProvider)
+      );
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      void logger.error(
+        { msg: 'Error executing analyze_document tool', error: String(error) },
+        'tools/analyze_document'
+      );
+
+      let errorMessage = 'An unknown error occurred';
+      if (error instanceof VisionError) {
+        errorMessage = `${error.name}: ${error.message}`;
+        if (error.provider) {
+          errorMessage += ` (Provider: ${error.provider})`;
+        }
+      } else if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              { error: true, message: errorMessage, tool: 'analyze_document' },
               null,
               2
             ),

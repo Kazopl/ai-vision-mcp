@@ -60,6 +60,10 @@ export class ConfigService {
   // IMAGE_MODEL. gemini-3.1-flash-image = Nano Banana 2, GA, stable to
   // May 2027+.
   private static readonly DEFAULT_EDIT_IMAGE_MODEL = 'gemini-3.1-flash-image';
+  private static readonly DEFAULT_TRANSCRIBE_AUDIO_MODEL =
+    'gemini-3.5-transcribe';
+  /** Video-to-image (thumbnails from video) is exclusive to this model. */
+  public static readonly VIDEO_TO_IMAGE_MODEL = 'gemini-3.1-flash-image';
   private config: Config;
   private loggedSummary = false;
   private logger = LoggerService.getInstance('ai-vision-mcp');
@@ -180,6 +184,8 @@ export class ConfigService {
         ANALYZE_VIDEO_MODEL: process.env.ANALYZE_VIDEO_MODEL,
         ANALYZE_AUDIO_MODEL: process.env.ANALYZE_AUDIO_MODEL,
         EDIT_IMAGE_MODEL: process.env.EDIT_IMAGE_MODEL,
+        ANALYZE_DOCUMENT_MODEL: process.env.ANALYZE_DOCUMENT_MODEL,
+        TRANSCRIBE_AUDIO_MODEL: process.env.TRANSCRIBE_AUDIO_MODEL,
 
         // Google Cloud Storage configuration (uses Vertex AI credentials)
         GCS_BUCKET_NAME: process.env.GCS_BUCKET_NAME,
@@ -816,9 +822,21 @@ export class ConfigService {
         return this.config.ANALYZE_VIDEO_MODEL;
       case FUNCTION_NAMES.ANALYZE_AUDIO:
         return this.config.ANALYZE_AUDIO_MODEL;
+      case FUNCTION_NAMES.ANALYZE_DOCUMENT:
+        return this.config.ANALYZE_DOCUMENT_MODEL;
+      case FUNCTION_NAMES.TRANSCRIBE_AUDIO:
+        return this.config.TRANSCRIBE_AUDIO_MODEL;
       default:
         return undefined;
     }
+  }
+
+  /** Model for dedicated speech-to-text: TRANSCRIBE_AUDIO_MODEL env or the GA default. */
+  public getTranscribeAudioModel(): string {
+    return (
+      this.config.TRANSCRIBE_AUDIO_MODEL ??
+      ConfigService.DEFAULT_TRANSCRIBE_AUDIO_MODEL
+    );
   }
 
   public getFileProcessingConfig(): FileProcessingConfig {

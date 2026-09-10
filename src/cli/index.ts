@@ -6,6 +6,8 @@ import { runDetectObjects } from './commands/detect-objects.js';
 import { runSegmentObjects } from './commands/segment-objects.js';
 import { runAnalyzeVideo } from './commands/analyze-video.js';
 import { runAnalyzeAudio } from './commands/analyze-audio.js';
+import { runTranscribeAudio } from './commands/transcribe-audio.js';
+import { runAnalyzeDocument } from './commands/analyze-document.js';
 import { runAuditDesign } from './commands/audit-design.js';
 import { runExtractFrame } from './commands/extract-frame.js';
 import { runEditImage } from './commands/edit-image.js';
@@ -36,6 +38,12 @@ export async function runCli(args: string[]): Promise<void> {
       break;
     case 'analyze-audio':
       await runAnalyzeAudio(commandArgs, config);
+      break;
+    case 'transcribe-audio':
+      await runTranscribeAudio(commandArgs, config);
+      break;
+    case 'analyze-document':
+      await runAnalyzeDocument(commandArgs, config);
       break;
     case 'audit-design':
       await runAuditDesign(commandArgs, config);
@@ -70,10 +78,12 @@ Commands:
   detect-objects <source>      Detect objects in an image
   segment-objects <source>     Segment objects (mask overlay image)
   analyze-video <source>       Analyze a video
-  analyze-audio <source>       Analyze audio (transcribe, summarize, identify speakers)
+  analyze-audio <source>       Analyze audio (questions, summaries, sound description)
+  transcribe-audio <source>    Dedicated speech-to-text (timestamps, diarization, 85+ languages)
+  analyze-document <source>    Analyze documents (PDF tables/charts/scans + text formats)
   audit-design <source>        Audit design compliance (pixel metrics + Gemini critique)
   extract-frame <source>       Extract video frames via ffmpeg (local, no AI call)
-  edit-image <sources...>      Edit/annotate/compose images (Nano Banana, 1-14 inputs)
+  edit-image <sources...>      Edit/annotate/compose images (Nano Banana, 1-14 inputs; --video for thumbnails)
 
 Global Options:
   --prompt <text>              The analysis prompt (required for some commands)

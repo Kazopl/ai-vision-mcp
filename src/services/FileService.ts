@@ -111,15 +111,24 @@ export class FileService {
 
       // Sniff the MIME type from the first bytes only - never read the whole
       // file into memory (videos can be hundreds of MB).
-      const mimeType = this.getMimeType(
-        filename,
-        await this.readFileHeader(normalizedPath)
-      );
+      const header = await this.readFileHeader(normalizedPath);
+      const mimeType = this.getMimeType(filename, header);
 
       // Fail fast if MIME type is unknown
       if (!mimeType.startsWith('video/')) {
         throw new FileUploadError(
           `Cannot process local video: unknown MIME type "${mimeType}". File: ${filename}`
+        );
+      }
+
+      // Content sanity check: the extension says video, but is it one?
+      if (!this.looksLikeVideoHeader(header)) {
+        const preview = header
+          .subarray(0, 60)
+          .toString('utf8')
+          .replace(/[^\x20-\x7e]/g, '.');
+        throw new FileUploadError(
+          `File "${filename}" has a video extension but its content is not a recognizable video container (starts with: "${preview}"). If it was downloaded, the source may have returned an error page instead of the video.`
         );
       }
 
@@ -156,6 +165,54 @@ export class FileService {
     } finally {
       await handle.close();
     }
+  }
+
+  /**
+   * Sanity-check that the file content actually looks like a video container.
+   * Catches the common failure where a "video" download saved an HTML error
+   * page (bot blocks, auth walls) that would otherwise upload and fail
+   * server-side with an opaque error. Checks known container signatures:
+   * MP4/MOV/3GP (ftyp), AVI (RIFF), MKV/WebM (EBML), FLV, WMV (ASF), MPEG.
+   */
+  private looksLikeVideoHeader(header: Buffer): boolean {
+    if (header.length < 12) return false;
+    // ISO BMFF (mp4, mov, m4v, 3gp): 'ftyp' at offset 4
+    if (header.subarray(4, 8).toString('ascii') === 'ftyp') return true;
+    // AVI: RIFF....AVI
+    if (
+      header.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      header.subarray(8, 11).toString('ascii') === 'AVI'
+    ) {
+      return true;
+    }
+    // Matroska / WebM: EBML magic
+    if (
+      header[0] === 0x1a &&
+      header[1] === 0x45 &&
+      header[2] === 0xdf &&
+      header[3] === 0xa3
+    ) {
+      return true;
+    }
+    // FLV
+    if (header.subarray(0, 3).toString('ascii') === 'FLV') return true;
+    // WMV / ASF GUID
+    if (
+      header[0] === 0x30 &&
+      header[1] === 0x26 &&
+      header[2] === 0xb2 &&
+      header[3] === 0x75
+    ) {
+      return true;
+    }
+    // MPEG program stream / video stream / transport stream
+    if (header[0] === 0x00 && header[1] === 0x00 && header[2] === 0x01) {
+      return true;
+    }
+    if (header[0] === 0x47 && header.length > 188 && header[188] === 0x47) {
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -263,12 +320,15 @@ export class FileService {
       bodyStream.destroy?.();
 
       const stat = await fs.stat(tempPath);
+      const header = await this.readFileHeader(tempPath);
       const mimeType =
         contentType && contentType.startsWith('video/')
           ? contentType
-          : this.getMimeType(filename, await this.readFileHeader(tempPath));
+          : this.getMimeType(filename, header);
 
-      if (!mimeType.startsWith('video/')) {
+      // Bail out when the download is not actually a video (e.g. an HTML
+      // error page served with a video content-type or .mp4 filename).
+      if (!mimeType.startsWith('video/') || !this.looksLikeVideoHeader(header)) {
         return fallbackUrl;
       }
 

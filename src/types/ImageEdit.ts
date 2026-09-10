@@ -13,6 +13,12 @@ export interface EditImageOptions {
   aspectRatio?: string;
   /** '512' | '1K' | '2K' | '4K' (512 is gemini-3.1-flash-image only) */
   imageSize?: string;
+  /**
+   * Video-to-image: a video (YouTube URL, local file path, or files/ ref)
+   * used as visual context to generate thumbnails, posters, or infographics.
+   * Exclusive to gemini-3.1-flash-image (auto-selected when set).
+   */
+  videoSource?: string;
 }
 
 export interface EditImageResult {
@@ -33,11 +39,13 @@ export interface EditImageResult {
 }
 
 export interface EditImageArgs {
-  imageSources: string[]; // 1-14 sources: URL, base64 data URI, or local file path
+  imageSources?: string[]; // 0-14 sources: URL, base64 data URI, or local file path
   prompt: string;
   outputFilePath?: string;
   aspectRatio?: string;
   imageSize?: string;
+  /** Video-to-image: YouTube URL, local video path, or files/ reference */
+  videoSource?: string;
 }
 
 export interface EditedImageFile {

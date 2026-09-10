@@ -24,11 +24,16 @@ import { RetryHandler } from '../../utils/retry.js';
 import { formatDuration } from '../../utils/duration.js';
 import { processVideoSource } from '../../utils/videoSourceHandler.js';
 import { processImageSource } from '../../utils/imageSourceHandler.js';
+import fs from 'fs/promises';
 import {
   loadAudioSource,
   getAudioMimeType,
   AUDIO_INLINE_THRESHOLD,
 } from '../../utils/audioSourceHandler.js';
+import {
+  loadDocumentSource,
+  getDocumentMimeType,
+} from '../../utils/documentSourceHandler.js';
 import type {
   EditImageInput,
   EditImageOptions,
@@ -706,6 +711,106 @@ export class VertexAIProvider extends BaseVisionProvider {
       );
     } catch (error) {
       throw this.handleError(error, 'audio analysis');
+    }
+  }
+
+  async analyzeDocument(
+    documentSource: string,
+    prompt: string,
+    options?: AnalysisOptions
+  ): Promise<AnalysisResult> {
+    try {
+      let documentPart: any;
+      let fileSize: number | undefined;
+      let processingDuration = 0;
+
+      if (documentSource.startsWith('gs://')) {
+        documentPart = {
+          fileData: {
+            fileUri: documentSource,
+            mimeType: getDocumentMimeType(documentSource),
+          },
+        };
+      } else {
+        let buffer: Buffer;
+        let mimeType: string;
+        const isLocalFile =
+          !documentSource.startsWith('data:') &&
+          !/^https?:\/\//i.test(documentSource);
+
+        if (isLocalFile) {
+          const { result, duration } = await this.measureAsync(async () =>
+            fs.readFile(documentSource)
+          );
+          buffer = result;
+          mimeType = getDocumentMimeType(documentSource);
+          processingDuration += duration;
+        } else {
+          const { result: loaded, duration } = await this.measureAsync(
+            async () => loadDocumentSource(documentSource)
+          );
+          buffer = loaded.buffer;
+          mimeType = loaded.mimeType;
+          processingDuration += duration;
+        }
+        fileSize = buffer.length;
+
+        if (buffer.length > 20 * 1024 * 1024) {
+          throw new ProviderError(
+            `Document is too large for inline transport (${Math.round(buffer.length / 1024 / 1024)}MB > 20MB). Upload it to GCS and pass the gs:// URI instead.`,
+            'vertex_ai'
+          );
+        }
+
+        documentPart = {
+          inlineData: { mimeType, data: buffer.toString('base64') },
+        };
+      }
+
+      const model = this.resolveModelForFunction(
+        'image',
+        options?.functionName
+      );
+
+      const { result: response, duration: analysisDuration } =
+        await this.measureAsync(async () => {
+          return await this.client.models.generateContent({
+            model,
+            contents: [
+              { role: 'user', parts: [documentPart, { text: prompt }] },
+            ],
+            config: this.buildConfigWithOptions(
+              'image',
+              options?.functionName,
+              options
+            ),
+          });
+        });
+
+      const text = response.text || '';
+      const usage = response.usageMetadata;
+
+      return this.createAnalysisResult(
+        text,
+        model,
+        usage &&
+          usage.promptTokenCount &&
+          usage.candidatesTokenCount &&
+          usage.totalTokenCount
+          ? {
+              promptTokenCount: usage.promptTokenCount,
+              candidatesTokenCount: usage.candidatesTokenCount,
+              totalTokenCount: usage.totalTokenCount,
+            }
+          : undefined,
+        processingDuration + analysisDuration,
+        documentPart.fileData?.mimeType || documentPart.inlineData?.mimeType,
+        fileSize,
+        response.modelVersion,
+        response.responseId
+      );
+    } catch (error) {
+      throw this.handleError(error, 'document analysis');
     }
   }
 

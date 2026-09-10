@@ -58,6 +58,8 @@ export const ConfigSchema = z.object({
   ANALYZE_VIDEO_MODEL: z.string().min(1).optional(),
   ANALYZE_AUDIO_MODEL: z.string().min(1).optional(),
   EDIT_IMAGE_MODEL: z.string().min(1).optional(),
+  ANALYZE_DOCUMENT_MODEL: z.string().min(1).optional(),
+  TRANSCRIBE_AUDIO_MODEL: z.string().min(1).optional(),
 
   // Gemini API configuration
   GEMINI_API_KEY: z.string().min(1).optional(),

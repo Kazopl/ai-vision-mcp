@@ -81,6 +81,8 @@ The AI Vision MCP Server uses a hierarchical configuration system where more spe
 | `SEGMENT_OBJECTS_IN_IMAGE_MODEL` | No | Model for segment_objects_in_image function | Uses `IMAGE_MODEL` |
 | `ANALYZE_VIDEO_MODEL` | No | Model for analyze_video function | Uses `VIDEO_MODEL` |
 | `ANALYZE_AUDIO_MODEL` | No | Model for analyze_audio function | Uses `VIDEO_MODEL` |
+| `ANALYZE_DOCUMENT_MODEL` | No | Model for analyze_document (PDF/text understanding) | Uses `IMAGE_MODEL` |
+| `TRANSCRIBE_AUDIO_MODEL` | No | Dedicated speech-to-text model for transcribe_audio (word timestamps, diarization, 85+ languages) | `gemini-3.5-transcribe` |
 | `EDIT_IMAGE_MODEL` | No | Model for edit_image (must be a Nano Banana image model; does not fall back to `IMAGE_MODEL`). Options: `gemini-3.1-flash-lite-image` (fastest/cheapest), `gemini-3.1-flash-image` (default, ~95% of Pro quality), `gemini-3-pro-image` (Nano Banana Pro: best quality and text rendering, ~2x price, 8-20s, min output 1K) | `gemini-3.1-flash-image` |
 
 ### Media Resolution & Thinking Level (Gemini 3+)
