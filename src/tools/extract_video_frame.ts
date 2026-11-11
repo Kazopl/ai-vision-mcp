@@ -146,7 +146,9 @@ export async function extract_video_frame(
 
     const frames: ExtractedFrameInfo[] = [];
     for (const frame of rawFrames) {
-      let buffer = await fs.readFile(frame.path);
+      // Typed as Buffer: readFile returns the narrower NonSharedBuffer in
+      // current Node typings, which the cropped result is not assignable to.
+      let buffer: Buffer = await fs.readFile(frame.path);
       if (args.cropRegion) {
         buffer = await cropImageBuffer(buffer, args.cropRegion);
         await fs.writeFile(frame.path, buffer);

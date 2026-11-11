@@ -21,6 +21,8 @@ A powerful Model Context Protocol (MCP) server that provides AI-powered image an
 
 ### Pre-requisites
 
+**Node.js 22 or later** is required (check with `node --version`).
+
 You could choose either to use [`google` provider](https://aistudio.google.com/welcome) or [`vertex_ai` provider](https://cloud.google.com/vertex-ai/generative-ai/docs/start/quickstart). For simplicity, `google` provider is recommended.
 
 Below are the environment variables you need to set based on your selected provider. (Note: It’s recommended to set the timeout configuration to more than 5 minutes for your MCP client).
@@ -857,7 +859,7 @@ If stdout is polluted, clients (Codex/Claude Code) may disconnect and report `Tr
 
 ### Prerequisites
 
-- Node.js 22+ (required by `@google/genai` 3.x; Node 20 reached end-of-life in April 2026)
+- Node.js 22+ (required by `@google/genai` 3.x and `@google-cloud/storage` 8.x; Node 20 reached end-of-life in April 2026)
 - npm or yarn
 
 ### Setup
@@ -904,6 +906,8 @@ src/
 ├── utils/            # Utility functions
 └── server.ts         # Main MCP server
 ```
+
+**Dependencies and protocol.** The server is built on the MCP TypeScript SDK v2 (`@modelcontextprotocol/server`) and `zod` 4, and speaks the 2025-11-25 protocol revision over stdio, so it works with clients built on either SDK generation (verified against a v1.30 SDK client: tool calls, progress notifications, and inline payloads above 10MB). Tool input schemas are published as JSON Schema 2020-12. The Gemini side uses `@google/genai` 3.x pinned to API version `v1beta`.
 
 ## Error Handling
 

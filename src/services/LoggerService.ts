@@ -1,4 +1,5 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
+
 export type McpLogLevel =
   | 'debug'
   | 'info'
@@ -61,7 +62,9 @@ export class LoggerService {
     // If attached and capability enabled, prefer MCP logging
     if (this.mcpServer) {
       try {
-        // sdk v1 uses server.server.sendLoggingMessage
+        // The low-level server keeps sendLoggingMessage in SDK v2. It is
+        // marked deprecated for the 2026-07-28 protocol revision but stays
+        // fully functional for the 2025-era protocol this server speaks.
         await this.mcpServer.server.sendLoggingMessage({
           level,
           logger: logger || this.loggerName,

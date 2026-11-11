@@ -7,8 +7,8 @@
  * - Environment configuration
  */
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { Client } from '@modelcontextprotocol/client';
 import { spawn, ChildProcess } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -336,7 +336,8 @@ export async function callTool(
   args: Record<string, unknown>,
   options?: any
 ): Promise<any> {
-  return client.callTool({ name, arguments: args } as any, undefined as any, options);
+  // SDK v2: callTool(params, options) - the v1 result-schema argument is gone
+  return client.callTool({ name, arguments: args } as any, options);
 }
 
 // ============================================================================

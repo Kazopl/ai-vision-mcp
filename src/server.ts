@@ -2,8 +2,8 @@
  * Main MCP Server implementation
  */
 
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { McpServer } from '@modelcontextprotocol/server';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { createRequire } from 'node:module';
 import fs from 'fs/promises';
@@ -61,6 +61,9 @@ process.on('unhandledRejection', reason => {
   );
   // Don't exit - let MCP handle gracefully
 });
+
+/** Largest single JSON-RPC message accepted on stdin (see runMcpServer). */
+const STDIO_MAX_BUFFER_BYTES = 256 * 1024 * 1024;
 
 // Report the real package version (dist/server.js -> ../package.json)
 const packageVersion: string = (() => {
@@ -224,12 +227,18 @@ async function buildInlineImageBlock(
  * get_analysis_result instead.
  */
 async function withProgressHeartbeat<T>(
-  extra: any,
+  ctx: any,
   label: string,
   fn: () => Promise<T>
 ): Promise<T> {
-  const progressToken = extra?._meta?.progressToken;
-  if (progressToken === undefined || !extra?.sendNotification) {
+  // MCP SDK v2 handler context: request metadata and notifications live
+  // under ctx.mcpReq (v1 exposed them flat as extra._meta / sendNotification).
+  const progressToken = ctx?.mcpReq?._meta?.progressToken;
+  const notify: ((notification: unknown) => Promise<void>) | undefined =
+    typeof ctx?.mcpReq?.notify === 'function'
+      ? (notification: unknown) => ctx.mcpReq.notify(notification)
+      : undefined;
+  if (progressToken === undefined || !notify) {
     return fn();
   }
 
@@ -239,7 +248,7 @@ async function withProgressHeartbeat<T>(
     tick++;
     const elapsed = Math.round((Date.now() - startedAt) / 1000);
     Promise.resolve(
-      extra.sendNotification({
+      notify({
         method: 'notifications/progress',
         params: {
           progressToken,
@@ -2062,7 +2071,13 @@ process.on('SIGTERM', async () => {
 // Start server
 export async function runMcpServer(): Promise<void> {
   try {
-    const transport = new StdioServerTransport();
+    // SDK v2 caps the stdio read buffer at 10MB by default and closes the
+    // connection when one message exceeds it. Tool calls here can carry
+    // base64 images or audio inline, so allow the same sizes as before
+    // (v1 was unbounded): 256MB covers a 100MB+ payload after base64.
+    const transport = new StdioServerTransport(process.stdin, process.stdout, {
+      maxBufferSize: STDIO_MAX_BUFFER_BYTES,
+    });
     await server.connect(transport);
     await logger.info('AI Vision MCP Server started successfully', 'server');
   } catch (error) {

@@ -336,8 +336,8 @@ export const ProviderInfoSchema = z.object({
     image: ModelNameSchema,
     video: ModelNameSchema,
   }),
-  credentials: z.record(z.string()),
-  options: z.record(z.unknown()).optional(),
+  credentials: z.record(z.string(), z.string()),
+  options: z.record(z.string(), z.unknown()).optional(),
 });
 
 // Health status validation
@@ -467,7 +467,7 @@ export const isSupportedVideoFormat = (
 
 // Error formatting for validation errors
 export const formatZodError = (error: z.ZodError): string => {
-  const errorMessages = error.errors.map(err => {
+  const errorMessages = error.issues.map(err => {
     const path = err.path.join('.');
     return `${path}: ${err.message}`;
   });
