@@ -522,11 +522,19 @@ Dedicated speech-to-text using `gemini-3.5-transcribe` (GA Aug 2026), purpose-bu
 **Parameters:**
 - `audioSource` (string): URL, base64 data URI, local file path, or `files/` reference
 - `options` (object, optional):
-  - `diarization` (boolean) - label speakers; segments are prefixed like `[spk:0]`
-  - `wordTimestamps` (boolean) - word-level timing; segments get start-offset prefixes like `[3.1s]`
+  - `diarization` (boolean) - label speakers; each segment is prefixed with its speaker, e.g. `[spk:0]`
+  - `wordTimestamps` (boolean) - enables timing; each segment is prefixed with its start time, e.g. `[0:03]`
   - `mode` (`verbatim` default | `smart`) - smart mode removes filler words and adds formatting (incompatible with diarization/timestamps)
   - `languageCodes` (string[]) - BCP-47 hints, e.g. `["en-US", "ro-RO"]`
   - `customVocabulary` (string[]) - up to 1000 terms to bias recognition (names, jargon; incompatible with `wordTimestamps`)
+
+With both options a two-speaker recording comes back as:
+
+```
+[0:00] [spk:0] Good morning. Can you give me the status of the settlement queue?
+[0:03] [spk:1] Sure. The settlement retry queue is degraded with four unacknowledged messages.
+[0:08] [spk:0] Thanks. Please re-queue them after the deploy.
+```
 
 Audio without speech returns an empty transcript rather than an error. Override the model with the `TRANSCRIBE_AUDIO_MODEL` env var.
 

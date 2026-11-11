@@ -621,27 +621,35 @@ describe('transcription', () => {
     expect(result.text).toBe('');
   });
 
-  test('prefixes segments with segment offsets and speaker labels', async () => {
+  test('keeps speaker labels and timing when parts carry both text and audioTranscription', async () => {
+    // The current response shape (Nov 2026): every transcription part has a
+    // plain `text` copy next to `audioTranscription`. Reading `text` first
+    // silently dropped the label and timing.
     generateContentMock.mockResolvedValue(
       okResponse({
-        text: undefined,
+        text: 'Hello team. Thanks.',
         candidates: [
           {
             finishReason: 'STOP',
             content: {
               parts: [
                 {
+                  text: 'Hello team.',
                   audioTranscription: {
                     text: 'Hello team.',
                     speakerLabel: 'spk:0',
-                    startOffset: '0.4s',
+                    words: [
+                      { word: 'Hello', startOffset: '0.100s', endOffset: '0.400s' },
+                      { word: 'team.', startOffset: '0.400s', endOffset: '1s' },
+                    ],
                   },
                 },
                 {
+                  text: 'Thanks.',
                   audioTranscription: {
                     text: 'Thanks.',
                     speakerLabel: 'spk:1',
-                    words: [{ word: 'Thanks.', startOffset: '3.1s' }],
+                    startOffset: '63.500s',
                   },
                 },
               ],
@@ -653,15 +661,60 @@ describe('transcription', () => {
 
     const result = await createProvider().transcribeAudio(AUDIO_FILE, {
       diarization: true,
+      wordTimestamps: true,
     });
 
     expect(result.text).toBe(
-      '[0.4s] [spk:0] Hello team.\n[3.1s] [spk:1] Thanks.'
+      '[0:00] [spk:0] Hello team.\n[1:03] [spk:1] Thanks.'
     );
     expect(lastRequest().config).toMatchObject({
-      audioTranscriptionConfig: { diarization: true },
+      audioTranscriptionConfig: { diarization: true, wordTimestamp: true },
       store: false,
     });
+  });
+
+  test('still reads the earlier shape with audioTranscription only', async () => {
+    generateContentMock.mockResolvedValue(
+      okResponse({
+        text: undefined,
+        candidates: [
+          {
+            finishReason: 'STOP',
+            content: {
+              parts: [
+                { audioTranscription: { text: 'Hello team.', speakerLabel: 'spk:0' } },
+              ],
+            },
+          },
+        ],
+      })
+    );
+
+    const result = await createProvider().transcribeAudio(AUDIO_FILE, {
+      diarization: true,
+    });
+    expect(result.text).toBe('[spk:0] Hello team.');
+  });
+
+  test('returns plain text when no diarization or timing was requested', async () => {
+    generateContentMock.mockResolvedValue(
+      okResponse({
+        text: 'Hello team.',
+        candidates: [
+          {
+            finishReason: 'STOP',
+            content: {
+              parts: [
+                { text: 'Hello team.', audioTranscription: { text: 'Hello team.' } },
+              ],
+            },
+          },
+        ],
+      })
+    );
+
+    const result = await createProvider().transcribeAudio(AUDIO_FILE);
+    expect(result.text).toBe('Hello team.');
   });
 });
 

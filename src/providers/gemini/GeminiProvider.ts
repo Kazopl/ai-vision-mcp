@@ -795,23 +795,35 @@ export class GeminiProvider extends BaseVisionProvider {
     const parts = response.candidates?.[0]?.content?.parts || [];
     const segments: string[] = [];
     for (const part of parts) {
-      if (part.text) {
-        segments.push(part.text);
-      } else if (part.audioTranscription?.text) {
+      // Check audioTranscription first. Since late 2026 transcription parts
+      // carry BOTH `text` and `audioTranscription`; reading `text` first
+      // would drop the speaker label and timing (earlier responses had only
+      // `audioTranscription`, which this still handles).
+      if (part.audioTranscription?.text) {
         const t = part.audioTranscription;
-        // Segment-level offsets (SDK 2.29+) when present, else the first
-        // word's offset (only populated with wordTimestamps).
+        // Segment-level offset when present, else the first word's offset
+        // (word offsets are only populated with wordTimestamps).
         const startOffset = t.startOffset ?? t.words?.[0]?.startOffset;
         const prefix = [
-          startOffset ? `[${startOffset}]` : null,
+          startOffset ? `[${this.formatOffset(startOffset)}]` : null,
           t.speakerLabel ? `[${t.speakerLabel}]` : null,
         ]
           .filter(Boolean)
           .join(' ');
         segments.push(prefix ? `${prefix} ${t.text}` : t.text);
+      } else if (part.text) {
+        segments.push(part.text);
       }
     }
     return segments.join('\n') || response.text || '';
+  }
+
+  /** "63.500s" -> "1:03". Returns the raw value if it is not a duration. */
+  private formatOffset(offset: string): string {
+    const seconds = parseDurationSeconds(offset);
+    if (seconds === undefined) return offset;
+    const whole = Math.floor(seconds);
+    return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
   }
 
   async analyzeAudio(
