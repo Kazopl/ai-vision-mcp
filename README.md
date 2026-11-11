@@ -645,6 +645,17 @@ Measured in November 2026 on one 98-second clip with `gemini-3.8-flash` at `high
 
 Static stayed flat; agentic ranged from half the cost to almost five times the cost and close to the 60-second tool timeout some MCP clients enforce. That is why `auto` keeps short clips on static. This is one clip, so treat the numbers as an illustration rather than a benchmark.
 
+**Accuracy on screen recordings is a different story.** On a synthetic 90-second screen recording with small on-screen text (job IDs in a log panel, a counter, a two-second error toast, a dialog), five questions per run and four runs per configuration at `high` resolution:
+
+| Model and mode | Runs with all five answers right | Typical time | Typical tokens |
+| --- | --- | --- | --- |
+| `gemini-3.8-flash`, agentic | 4 of 4 | 40s | 82k |
+| `gemini-3.8-flash`, static | 0 of 4 | 18s | 27k |
+| `gemini-4-argon`, agentic | 2 of 4 | 24s | 29k |
+| `gemini-4-argon`, static | 2 of 4 | 24s | 28k |
+
+Static's mistakes were one misread character in a job ID (three of four runs) and a miscounted step list (two of four); every configuration caught the two-second toast. Agentic can re-fetch frames at higher fidelity, which helps with small text. So if your videos are screen recordings and exact on-screen text matters, set `VIDEO_PROCESSING=agentic` (or pass `processing: "agentic"`) and accept roughly twice the time and three times the tokens. For a character-exact read of a known moment, `extract_video_frame` followed by `analyze_image` at `ultra_high` remains the most reliable path. This is a small sample on one recording.
+
 > Earlier versions of this README claimed agentic used "40 prompt tokens vs 13,573 static" on a short clip. That comparison counted only prompt tokens and missed the tool-use tokens agentic spends loading frames. `metadata.usage` now reports `thoughtsTokenCount` and `toolUsePromptTokenCount` so the full cost is visible.
 
 Analyzes a video using AI and returns a detailed description.
