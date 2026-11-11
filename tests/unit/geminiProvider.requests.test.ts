@@ -836,6 +836,39 @@ describe('evaluateMedia (Decisions API)', () => {
     });
   });
 
+  test('falls back to the configured media resolution per media kind', async () => {
+    process.env.MEDIA_RESOLUTION_FOR_IMAGE = 'ultra_high';
+    process.env.MEDIA_RESOLUTION_FOR_VIDEO = 'high';
+    decisionsCreateMock.mockResolvedValue(decisionsResponse);
+
+    await createProvider().evaluateMedia(
+      [
+        { kind: 'image', mimeType: 'image/png', data: 'AAAA' },
+        { kind: 'video', mimeType: 'video/mp4', uri: VIDEO_FILE },
+        { kind: 'audio', mimeType: 'audio/mp4', uri: 'files/audio' },
+      ],
+      questions
+    );
+
+    const input = decisionsCreateMock.mock.calls[0][0].input;
+    expect(input[0].resolution).toBe('ultra_high');
+    expect(input[1].resolution).toBe('high');
+    expect(input[2]).not.toHaveProperty('resolution');
+  });
+
+  test('sends no resolution when none is configured or requested', async () => {
+    decisionsCreateMock.mockResolvedValue(decisionsResponse);
+
+    await createProvider().evaluateMedia(
+      [{ kind: 'image', mimeType: 'image/png', data: 'AAAA' }],
+      questions
+    );
+
+    expect(decisionsCreateMock.mock.calls[0][0].input[0]).not.toHaveProperty(
+      'resolution'
+    );
+  });
+
   test('accepts text-only input', async () => {
     decisionsCreateMock.mockResolvedValue({
       answers: { shows_error: { type: 'noul', noul: 0.1, confidence: 0.9 } },

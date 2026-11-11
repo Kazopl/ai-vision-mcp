@@ -584,7 +584,7 @@ Every answer also has `confidence` and a `lowConfidence` flag (confidence below 
 - `mediaSources` (array, 0-16): local paths, HTTPS URLs, base64 data URIs, or `files/` references. Images, video, audio and PDF can be mixed in one call.
 - `context` (string, optional): text shared by all questions, or the whole input when evaluating text only
 - `questions` (array, 1-1000): each has `id`, `type`, `question`, plus `yesMeans`/`noMeans` (yes_no), `options` (choice), or `levels` (score)
-- `options.mediaResolution` (optional): `low`, `medium`, `high`, `ultra_high` (images only; video is capped at `high`)
+- `options.mediaResolution` (optional): `low`, `medium`, `high`, `ultra_high` (images only; video is capped at `high`). Defaults to `MEDIA_RESOLUTION_FOR_IMAGE` / `MEDIA_RESOLUTION_FOR_VIDEO` when set, like the analyze tools.
 
 **Example:**
 ```json
@@ -609,7 +609,7 @@ page: dashboard (confidence 96%)
 severity: level 2/3 "One component failing" (expected score 1.71, confidence 56%) [low confidence]
 ```
 
-Measured in November 2026: three to five questions about a 1920x1080 screenshot take 0.7-1.0 seconds and about 1,400 input tokens; a 98-second video takes about 4.7 seconds (after upload) and 10,400 tokens; a 24-page PDF about 1.2 seconds and 20,500 tokens.
+Measured in November 2026: three to five questions about a 1920x1080 screenshot take 0.7-1.0 seconds and about 1,400 input tokens; a 98-second video takes about 4.7 seconds (after upload) and 10,400 tokens; a 16-page PDF about 1.2 seconds and 20,500 tokens.
 
 **Writing good questions:** ask one thing per question, phrase it positively, write the full question (the model never sees the `id`), give every option and level a short description, and include a catch-all option such as `other`.
 

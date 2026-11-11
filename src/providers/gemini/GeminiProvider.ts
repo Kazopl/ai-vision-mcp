@@ -1150,13 +1150,19 @@ export class GeminiProvider extends BaseVisionProvider {
         mime_type: item.mimeType,
         ...(item.data ? { data: item.data } : { uri: item.uri }),
       };
-      const resolution = options?.mediaResolution;
-      if (resolution && (item.kind === 'image' || item.kind === 'video')) {
-        // ultra_high is image-only; the API rejects it on video blocks
-        block.resolution =
-          resolution === 'ultra_high' && item.kind === 'video'
-            ? 'high'
-            : resolution;
+      if (item.kind === 'image' || item.kind === 'video') {
+        // Per-call option first, then the same env defaults the analyze
+        // tools use (MEDIA_RESOLUTION_FOR_IMAGE / _FOR_VIDEO).
+        const resolution =
+          options?.mediaResolution ??
+          this.configService.getMediaResolutionForTask(item.kind);
+        if (resolution) {
+          // ultra_high is image-only; the API rejects it on video blocks
+          block.resolution =
+            resolution === 'ultra_high' && item.kind === 'video'
+              ? 'high'
+              : resolution;
+        }
       }
       input.push(block);
     }
