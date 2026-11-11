@@ -11,12 +11,16 @@ export interface EditImageInput {
 export interface EditImageOptions {
   /** e.g. '1:1', '16:9', '3:2'... Defaults to the input image's ratio. */
   aspectRatio?: string;
-  /** '512' | '1K' | '2K' | '4K' (512 is gemini-3.1-flash-image only) */
+  /**
+   * '1K' (default) | '2K' | '4K'. '512' exists only on the deprecated
+   * gemini-3.1-flash-image and is raised to '1K' on other models.
+   */
   imageSize?: string;
   /**
    * Video-to-image: a video (YouTube URL, local file path, or files/ ref)
    * used as visual context to generate thumbnails, posters, or infographics.
-   * Exclusive to gemini-3.1-flash-image (auto-selected when set).
+   * Needs a video-capable image model (gemini-nano-banana-2.1, the default);
+   * gemini-3-pro-image cannot take video, so the default is used instead.
    */
   videoSource?: string;
 }
@@ -27,14 +31,12 @@ export interface EditImageResult {
   metadata: {
     model: string;
     provider: string;
-    usage?: {
-      promptTokenCount: number;
-      candidatesTokenCount: number;
-      totalTokenCount: number;
-    };
+    usage?: import('./Analysis.js').UsageMetadata;
     processingTime?: number;
     modelVersion?: string;
     responseId?: string;
+    /** Why generation stopped; explains refusals (e.g. PROHIBITED_CONTENT) */
+    finishReason?: string;
   };
 }
 

@@ -34,3 +34,7 @@ export {
   transcribe_audio,
   type TranscribeAudioArgs,
 } from './transcribe_audio.js';
+export {
+  evaluate_media,
+  type EvaluateMediaArgs,
+} from './evaluate_media.js';

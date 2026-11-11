@@ -71,6 +71,8 @@ The AI Vision MCP Server uses a hierarchical configuration system where more spe
 | `IMAGE_MODEL` | No | Model for image analysis | `gemini-3.5-flash-lite` |
 | `VIDEO_MODEL` | No | Model for video analysis | `gemini-3.5-flash-lite` |
 
+Current choices (November 2026): `gemini-3.5-flash-lite` (fastest, cheapest), `gemini-3.8-flash` (Google's recommended general-purpose model), `gemini-4-argon` and `gemini-4-carbon` (flagship reasoning, paid tier only). See "Choosing a Model" in the README for prices and measurements.
+
 ### Function-specific Model Selection
 
 | Variable | Required | Description | Default |
@@ -83,7 +85,8 @@ The AI Vision MCP Server uses a hierarchical configuration system where more spe
 | `ANALYZE_AUDIO_MODEL` | No | Model for analyze_audio function | Uses `VIDEO_MODEL` |
 | `ANALYZE_DOCUMENT_MODEL` | No | Model for analyze_document (PDF/text understanding) | Uses `IMAGE_MODEL` |
 | `TRANSCRIBE_AUDIO_MODEL` | No | Dedicated speech-to-text model for transcribe_audio (word timestamps, diarization, 85+ languages) | `gemini-3.5-transcribe` |
-| `EDIT_IMAGE_MODEL` | No | Model for edit_image (must be a Nano Banana image model; does not fall back to `IMAGE_MODEL`). Options: `gemini-3.1-flash-lite-image` (fastest/cheapest), `gemini-3.1-flash-image` (default, ~95% of Pro quality), `gemini-3-pro-image` (Nano Banana Pro: best quality and text rendering, ~2x price, 8-20s, min output 1K) | `gemini-3.1-flash-image` |
+| `EDIT_IMAGE_MODEL` | No | Model for edit_image (must be a Nano Banana image model; does not fall back to `IMAGE_MODEL`). Options: `gemini-nano-banana-2.1` (default, GA Oct 2026, accepts video input), `gemini-3-pro-image` (Nano Banana Pro: studio 4K and layouts; cannot take video input, so video-to-image requests use the default), `gemini-3.1-flash-lite-image` (lowest latency). `gemini-3.1-flash-image` is deprecated | `gemini-nano-banana-2.1` |
+| `DECISION_MODEL` | No | Model for evaluate_media (Decisions API) | `gemini-decision-1` |
 
 ### Media Resolution & Thinking Level (Gemini 3+)
 
@@ -92,14 +95,17 @@ The AI Vision MCP Server uses a hierarchical configuration system where more spe
 | `MEDIA_RESOLUTION` | No | Token resolution for input media: `low`, `medium`, `high`, `ultra_high` (`ultra_high` is image-only; videos fall back to `high`) | Model default |
 | `MEDIA_RESOLUTION_FOR_IMAGE` | No | Overrides `MEDIA_RESOLUTION` for images | - |
 | `MEDIA_RESOLUTION_FOR_VIDEO` | No | Overrides `MEDIA_RESOLUTION` for videos (`high` ~258 tokens/frame with zoomed reframing makes small on-screen text readable) | - |
-| `THINKING_LEVEL` | No | Reasoning depth: `minimal`, `low`, `medium`, `high` | Model default (`medium` for gemini-3.5-flash, `minimal` for gemini-3.1-flash-lite) |
+| `THINKING_LEVEL` | No | Reasoning depth: `minimal`, `low`, `medium`, `high`. `minimal` exists only on `gemini-3.5-flash-lite` and `gemini-3.6-flash`; it is raised to `low` on `gemini-3.8-flash` and Gemini 4 | Model default (`minimal` for gemini-3.5-flash-lite, `medium` for gemini-3.8-flash and Gemini 4) |
 | `THINKING_LEVEL_FOR_IMAGE` | No | Overrides `THINKING_LEVEL` for images | - |
 | `THINKING_LEVEL_FOR_VIDEO` | No | Overrides `THINKING_LEVEL` for videos | - |
-| `VIDEO_PROCESSING` | No | Video processing mode: `agentic` (model navigates the video on demand, up to ~97% fewer tokens on long videos) or `static` (fixed-rate frame ingestion). Requires Gemini 3.6+ or 3.5-flash-lite; `videoMetadata` forces static | `agentic` |
+| `VIDEO_PROCESSING` | No | Video processing mode: `auto` (static for short videos, agentic for long ones or unknown duration), `static` (fixed-rate frame ingestion: predictable cost, fastest on short clips) or `agentic` (model navigates the video on demand: up to 88% fewer tokens on long videos; on short clips cost varies widely with the question). Agentic needs Gemini 4, 3.6+ Flash or 3.5 Flash-Lite; `videoMetadata` always uses static | `auto` |
+| `VIDEO_AGENTIC_MIN_DURATION` | No | In `auto` mode, videos at least this many seconds long use agentic processing | `300` |
 | `AGENTIC_VISION` | No | Default for Agentic Vision on image analysis: the model runs sandboxed Python to zoom/crop/annotate the image itself (Gemini 3+). Per-call `agenticVision` option overrides | `false` |
 | `SAFETY_THRESHOLD` | No | Safety filter threshold for all harm categories: `off`, `block_none`, `block_only_high`, `block_medium_and_above`. `block_none` prevents spurious refusals on legitimate dev content (security errors, tokens, exploits) | API defaults |
 | `SERVICE_TIER` | No | Inference tier: `priority` (lowest latency, +75-100% price, needs Tier 2/3 paid project; auto-downgrades otherwise) or `flex` (50% cheaper, minutes-level latency) | `standard` |
-| `GEMINI_TIMEOUT_MS` | No | HTTP timeout for Gemini API requests (agentic loops can run minutes) | `300000` |
+| `GEMINI_TIMEOUT_MS` | No | HTTP timeout for Gemini API requests (agentic loops and Gemini 4 thinking can run for minutes) | `900000` |
+| `GEMINI_API_VERSION` | No | Gemini Developer API version. `@google/genai` 3.x defaults to `v1`, which rejects agentic video, transcription options and the Decisions API, so the server pins `v1beta` | `v1beta` |
+| `GEMINI_STORE_REQUESTS` | No | Whether Google may store requests in the project's logs: `false` (send `store=false`), `true`, or `project` (send nothing; follow the AI Studio project setting). New paid projects store by default since Oct 26, 2026 | `false` |
 | `INLINE_IMAGE_MAX_DIM` | No | Max dimension (px) of the inline annotated-image preview returned by detect/segment/extract tools; `0` disables inline images | `1200` |
 | `FFMPEG_PATH` | No | Path to the ffmpeg binary (used only by `extract_video_frame`) | `ffmpeg` on PATH |
 
@@ -168,7 +174,9 @@ export VERTEX_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBg...\n-----
 | `TEMPERATURE` | No | AI response temperature | 0.0–2.0 | `0.8` |
 | `TOP_P` | No | Top-p sampling parameter | 0.0–1.0 | `0.95` |
 | `TOP_K` | No | Top-k sampling parameter | 1–100 | `30` |
-| `MAX_TOKENS` | No | Maximum tokens for analysis | 1–8192 | `1000` |
+| `MAX_TOKENS` | No | Output cap. Thinking tokens count against it, so small values truncate or empty the answer. Gemini 4 models are raised to at least 32768 | 1–65536 | `16384` |
+
+`TEMPERATURE`, `TOP_P` and `TOP_K` are ignored by Gemini 3.6+ and Gemini 4 and are not sent to those models.
 
 ### Task-specific API Parameters
 
@@ -177,11 +185,11 @@ export VERTEX_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBg...\n-----
 | `TEMPERATURE_FOR_IMAGE` | No | Image-specific temperature | 0.0–2.0 | Uses `TEMPERATURE` |
 | `TOP_P_FOR_IMAGE` | No | Image-specific top-p | 0.0–1.0 | Uses `TOP_P` |
 | `TOP_K_FOR_IMAGE` | No | Image-specific top-k | 1–100 | Uses `TOP_K` |
-| `MAX_TOKENS_FOR_IMAGE` | No | Maximum tokens for image analysis | 1–8192 | Uses `MAX_TOKENS` |
+| `MAX_TOKENS_FOR_IMAGE` | No | Maximum tokens for image analysis | 1–65536 | Uses `MAX_TOKENS` |
 | `TEMPERATURE_FOR_VIDEO` | No | Video-specific temperature | 0.0–2.0 | Uses `TEMPERATURE` |
 | `TOP_P_FOR_VIDEO` | No | Video-specific top-p | 0.0–1.0 | Uses `TOP_P` |
 | `TOP_K_FOR_VIDEO` | No | Video-specific top-k | 1–100 | Uses `TOP_K` |
-| `MAX_TOKENS_FOR_VIDEO` | No | Maximum tokens for video analysis | 1–8192 | Uses `MAX_TOKENS` |
+| `MAX_TOKENS_FOR_VIDEO` | No | Maximum tokens for video analysis | 1–65536 | Uses `MAX_TOKENS` |
 
 ### Function-specific API Parameters
 
@@ -190,23 +198,23 @@ export VERTEX_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBg...\n-----
 | `TEMPERATURE_FOR_ANALYZE_IMAGE` | No | Temperature for analyze_image | 0.0–2.0 | Uses `TEMPERATURE_FOR_IMAGE` |
 | `TOP_P_FOR_ANALYZE_IMAGE` | No | Top-p for analyze_image | 0.0–1.0 | Uses `TOP_P_FOR_IMAGE` |
 | `TOP_K_FOR_ANALYZE_IMAGE` | No | Top-k for analyze_image | 1–100 | Uses `TOP_K_FOR_IMAGE` |
-| `MAX_TOKENS_FOR_ANALYZE_IMAGE` | No | Max tokens for analyze_image | 1–8192 | Uses `MAX_TOKENS_FOR_IMAGE` |
+| `MAX_TOKENS_FOR_ANALYZE_IMAGE` | No | Max tokens for analyze_image | 1–65536 | Uses `MAX_TOKENS_FOR_IMAGE` |
 | `TEMPERATURE_FOR_COMPARE_IMAGES` | No | Temperature for compare_images | 0.0–2.0 | Uses `TEMPERATURE_FOR_IMAGE` |
 | `TOP_P_FOR_COMPARE_IMAGES` | No | Top-p for compare_images | 0.0–1.0 | Uses `TOP_P_FOR_IMAGE` |
 | `TOP_K_FOR_COMPARE_IMAGES` | No | Top-k for compare_images | 1–100 | Uses `TOP_K_FOR_IMAGE` |
-| `MAX_TOKENS_FOR_COMPARE_IMAGES` | No | Max tokens for compare_images | 1–8192 | Uses `MAX_TOKENS_FOR_IMAGE` |
+| `MAX_TOKENS_FOR_COMPARE_IMAGES` | No | Max tokens for compare_images | 1–65536 | Uses `MAX_TOKENS_FOR_IMAGE` |
 | `TEMPERATURE_FOR_DETECT_OBJECTS_IN_IMAGE` | No | Temperature for object detection | 0.0–2.0 | `0.0` |
 | `TOP_P_FOR_DETECT_OBJECTS_IN_IMAGE` | No | Top-p for object detection | 0.0–1.0 | `0.95` |
 | `TOP_K_FOR_DETECT_OBJECTS_IN_IMAGE` | No | Top-k for object detection | 1–100 | `30` |
-| `MAX_TOKENS_FOR_DETECT_OBJECTS_IN_IMAGE` | No | Max tokens for object detection | 1–8192 | `8192` |
+| `MAX_TOKENS_FOR_DETECT_OBJECTS_IN_IMAGE` | No | Max tokens for object detection | 1–65536 | `8192` |
 | `TEMPERATURE_FOR_ANALYZE_VIDEO` | No | Temperature for analyze_video | 0.0–2.0 | Uses `TEMPERATURE_FOR_VIDEO` |
 | `TOP_P_FOR_ANALYZE_VIDEO` | No | Top-p for analyze_video | 0.0–1.0 | Uses `TOP_P_FOR_VIDEO` |
 | `TOP_K_FOR_ANALYZE_VIDEO` | No | Top-k for analyze_video | 1–100 | Uses `TOP_K_FOR_VIDEO` |
-| `MAX_TOKENS_FOR_ANALYZE_VIDEO` | No | Max tokens for analyze_video | 1–8192 | Uses `MAX_TOKENS_FOR_VIDEO` |
+| `MAX_TOKENS_FOR_ANALYZE_VIDEO` | No | Max tokens for analyze_video | 1–65536 | Uses `MAX_TOKENS_FOR_VIDEO` |
 | `TEMPERATURE_FOR_AUDIT_DESIGN` | No | Temperature for audit_design | 0.0–2.0 | `0.0` (deterministic) |
 | `TOP_P_FOR_AUDIT_DESIGN` | No | Top-p for audit_design | 0.0–1.0 | `0.95` |
 | `TOP_K_FOR_AUDIT_DESIGN` | No | Top-k for audit_design | 1–100 | `30` |
-| `MAX_TOKENS_FOR_AUDIT_DESIGN` | No | Max tokens for audit_design | 1–8192 | `1500` |
+| `MAX_TOKENS_FOR_AUDIT_DESIGN` | No | Max tokens for audit_design | 1–65536 | Uses `MAX_TOKENS_FOR_IMAGE` |
 
 ### File Processing Configuration
 
@@ -244,8 +252,7 @@ export VIDEO_PROVIDER="google"
 export GEMINI_API_KEY="your-gemini-api-key"
 
 # Basic configuration
-export TEMPERATURE=0.7
-export MAX_TOKENS=1500
+export MAX_TOKENS=16384   # the default; thinking tokens count against it
 export LOG_LEVEL="debug"
 ```
 
@@ -311,8 +318,8 @@ export GCS_BUCKET_NAME="your-mixed-provider-bucket"
 # Task-specific parameters
 export TEMPERATURE_FOR_IMAGE=0.2
 export TEMPERATURE_FOR_VIDEO=0.5
-export MAX_TOKENS_FOR_IMAGE=1000
-export MAX_TOKENS_FOR_VIDEO=2000
+export MAX_TOKENS_FOR_IMAGE=8192
+export MAX_TOKENS_FOR_VIDEO=16384
 ```
 
 ## File Upload Strategy Configuration
@@ -370,11 +377,21 @@ export VERTEX_AI_FILES_API_THRESHOLD=0  # All files use GCS
    ```
    **Solution**: Check `ALLOWED_IMAGE_FORMATS` and `ALLOWED_VIDEO_FORMATS` settings
 
-5. **Token Limit Exceeded**
+5. **Empty or cut-off answer**
    ```
-   Error: Response exceeds max tokens
+   Error: gemini-4-argon used the whole output budget before writing an answer (497 tokens went to thinking)
    ```
-   **Solution**: Increase relevant `MAX_TOKENS_*` environment variable
+   or a result with `finishReason: "MAX_TOKENS"` and a `metadata.note`.
+   **Solution**: Thinking tokens count against the output cap. Increase the relevant `MAX_TOKENS_*` variable (or the per-call `maxTokens`), or lower `THINKING_LEVEL`
+
+6. **Agentic video rejected**
+   ```
+   Agentic video processing is not enabled for api version v1. Use api version v1beta instead.
+   ```
+   **Solution**: Remove `GEMINI_API_VERSION=v1` (the server defaults to `v1beta`)
+
+7. **Document analysis fails with `INVALID_ARGUMENT`**
+   The API rejects `ultra_high` media resolution on documents. The server now treats it as `high` for `analyze_document`, so this only appears on versions before 0.1.0
 
 ### Debug Mode
 
@@ -406,8 +423,8 @@ Check the console output for detailed validation messages.
 
 1. **Use Environment-specific Files**: Create `.env.development` and `.env.production` files
 2. **Secure Credentials**: Never commit API keys or credentials to version control
-3. **Optimize Token Usage**: Set appropriate `MAX_TOKENS` values for each function type
-4. **Monitor Usage**: Use appropriate temperature settings for your use case
+3. **Control cost with thinking level, not small token caps**: `MAX_TOKENS` is only a ceiling; a low value truncates answers on thinking models. Lower `THINKING_LEVEL` instead
+4. **Check real usage**: `metadata.usage` includes `thoughtsTokenCount` and `toolUsePromptTokenCount`, which is where agentic video and high thinking levels spend tokens
 5. **Test Configuration**: Validate configuration in development before production deployment
 
 ## Related Documentation

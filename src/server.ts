@@ -5,6 +5,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { createRequire } from 'node:module';
 import fs from 'fs/promises';
 import { Image } from 'imagescript';
 import { ConfigService } from './services/ConfigService.js';
@@ -22,6 +23,7 @@ import {
   edit_image,
   analyze_document,
   transcribe_audio,
+  evaluate_media,
 } from './tools/index.js';
 import { VisionError } from './types/Errors.js';
 import { startJob, getJob } from './utils/jobStore.js';
@@ -60,11 +62,20 @@ process.on('unhandledRejection', reason => {
   // Don't exit - let MCP handle gracefully
 });
 
+// Report the real package version (dist/server.js -> ../package.json)
+const packageVersion: string = (() => {
+  try {
+    return createRequire(import.meta.url)('../package.json').version;
+  } catch {
+    return '0.0.0';
+  }
+})();
+
 // Create MCP server
 const server = new McpServer(
   {
     name: 'ai-vision-mcp',
-    version: '0.0.6',
+    version: packageVersion,
   },
   {
     capabilities: { logging: {} },
@@ -310,10 +321,10 @@ server.registerTool<any, any>(
             .number()
             .int()
             .min(1)
-            .max(8192)
+            .max(65536)
             .optional()
             .describe(
-              'Maximum number of tokens to generate in the response. For detailed image analysis, 1000-2000 tokens typically sufficient.'
+              'Output cap in tokens. Thinking tokens count against it, so a small value truncates or empties the answer; leave unset unless you need a hard limit (Gemini 4 models are raised to at least 32768).'
             ),
           mediaResolution: z
             .enum(['low', 'medium', 'high', 'ultra_high'])
@@ -325,7 +336,7 @@ server.registerTool<any, any>(
             .enum(['minimal', 'low', 'medium', 'high'])
             .optional()
             .describe(
-              'Reasoning depth (Gemini 3+ models only). Use "high" for hard visual reasoning or precise OCR; "minimal"/"low" for fast simple descriptions. Thinking tokens count toward maxTokens, so pair "high" with maxTokens >= 4000 or the answer gets truncated.'
+              'Reasoning depth (Gemini 3 and 4 models). Use "high" for hard visual reasoning; "low" for fast simple descriptions. Thinking tokens count toward maxTokens. "minimal" only exists on gemini-3.5-flash-lite and 3.6-flash; it is raised to "low" on gemini-3.8-flash and Gemini 4.'
             ),
           agenticVision: z
             .boolean()
@@ -492,10 +503,10 @@ server.registerTool<any, any>(
             .number()
             .int()
             .min(1)
-            .max(8192)
+            .max(65536)
             .optional()
             .describe(
-              'Maximum number of tokens to generate in the response. For comparing multiple images, recommend 1500-3000 tokens for comprehensive analysis.'
+              'Output cap in tokens. Thinking tokens count against it, so a small value truncates or empties the answer; leave unset unless you need a hard limit (Gemini 4 models are raised to at least 32768).'
             ),
         })
         .optional(),
@@ -867,7 +878,7 @@ server.registerTool<any, any>(
   {
     title: 'Edit Image',
     description:
-      'Edit, annotate, or compose images with Gemini native image generation (Nano Banana 2). Accepts 1-14 input images: pass one image to edit or write/draw on it ("add a red arrow pointing at the login button", "write APPROVED across the top"); pass two to highlight before/after differences ("mark every visual difference between image 1 and image 2 with red circles on image 2"); pass several to compose them. Also supports video-to-image via videoSource (YouTube URL or local video): generate thumbnails, movie posters, or summary infographics from video content. Annotated inputs work as spatial instructions (a box drawn on a reference copy tells the model where to act). Returns the edited image file plus an inline preview. Note: the model re-renders the whole image, so unedited areas are close but not pixel-identical.',
+      'Edit, annotate, or compose images with Gemini native image generation (Nano Banana 2.1 by default). Accepts 1-14 input images: pass one image to edit or write/draw on it ("add a red arrow pointing at the login button", "write APPROVED across the top"); pass two to highlight before/after differences ("mark every visual difference between image 1 and image 2 with red circles on image 2"); pass several to compose them. Also supports video-to-image via videoSource (YouTube URL or local video): generate thumbnails, movie posters, or summary infographics from video content. Annotated inputs work as spatial instructions (a box drawn on a reference copy tells the model where to act). Returns the edited image file plus an inline preview. Note: the model re-renders the whole image, so unedited areas are close but not pixel-identical.',
     inputSchema: z.object({
       imageSources: z
         .array(z.string())
@@ -880,7 +891,7 @@ server.registerTool<any, any>(
         .string()
         .optional()
         .describe(
-          'Video-to-image: a YouTube URL, local video file path, or files/ reference used as visual context (e.g. "generate a 16:9 thumbnail for this video"). Uses gemini-3.1-flash-image automatically.'
+          'Video-to-image: a YouTube URL, local video file path, or files/ reference used as visual context (e.g. "generate a 16:9 thumbnail for this video"). Needs a video-capable image model: gemini-nano-banana-2.1 (the default) is used automatically when EDIT_IMAGE_MODEL cannot take video (gemini-3-pro-image).'
         ),
       prompt: z
         .string()
@@ -918,7 +929,9 @@ server.registerTool<any, any>(
       imageSize: z
         .enum(['512', '1K', '2K', '4K'])
         .optional()
-        .describe('Output resolution (default 1K). Use 2K/4K for fine text.'),
+        .describe(
+          'Output resolution (default 1K). Use 2K or 4K when the image contains small text (at 1K fine text gets redrawn inexactly). "512" only exists on the deprecated gemini-3.1-flash-image and is raised to 1K on other models.'
+        ),
     }),
   },
   async (args: any, _extra: any) => {
@@ -1028,7 +1041,7 @@ server.registerTool<any, any>(
             .enum(['minimal', 'low', 'medium', 'high'])
             .optional()
             .describe(
-              'Reasoning depth (Gemini 3+ models only). "low" is enough for transcription; thinking tokens count toward maxTokens.'
+              'Reasoning depth (Gemini 3 and 4 models). "low" is enough for most audio questions; thinking tokens count toward maxTokens.'
             ),
         })
         .optional(),
@@ -1191,7 +1204,7 @@ server.registerTool<any, any>(
   {
     title: 'Analyze Document',
     description:
-      'Analyze a document with Gemini native document vision: PDFs are understood visually (layouts, tables, charts, diagrams, handwriting, scanned pages - up to 1000 pages), plus text formats (txt, md, html, csv, xml, rtf, json). Great for extracting structured data, summarizing reports, comparing contract clauses, or answering questions about specs. Sources: URL, base64 data URI, local file path, or files/ reference. Each PDF page costs ~258 tokens at default resolution.',
+      'Analyze a document with Gemini native document understanding. PDFs are read visually (layouts, tables, charts, diagrams, handwriting, scanned pages - up to 1000 pages). Microsoft Office and OpenDocument files are supported too: Word (.docx, .doc, .dotx, .odt), PowerPoint (.pptx, .ppt, .odp) and spreadsheets (.xlsx, .xls, .ods), plus text formats (txt, md, html, csv, xml, rtf, json, yaml, log). Caveats: .docx/.pptx/.odt arrive as text plus embedded images (page layout and charts are not rendered - export to PDF when layout matters); .doc/.ppt/.odp are rendered page by page; spreadsheets arrive as flattened CSV values without sheet names or formulas, and only the first sheet is guaranteed to be read. Great for extracting structured data, summarizing reports, comparing contract clauses, or answering questions about specs. Sources: URL, base64 data URI, local file path, or files/ reference. Each PDF page costs ~258 tokens at default resolution.',
     inputSchema: z.object({
       documentSource: z
         .string()
@@ -1211,13 +1224,13 @@ server.registerTool<any, any>(
             .enum(['low', 'medium', 'high', 'ultra_high'])
             .optional()
             .describe(
-              'Token resolution per PDF page. Use "high" or "ultra_high" for dense tables and small print.'
+              'Token resolution per rendered page (PDF, .doc, .ppt, .odp). Use "high" for dense tables and small print. "ultra_high" is not available for documents and is treated as "high".'
             ),
           thinkingLevel: z
             .enum(['minimal', 'low', 'medium', 'high'])
             .optional()
             .describe(
-              'Reasoning depth (Gemini 3+ models only). Raise for complex cross-page analysis.'
+              'Reasoning depth (Gemini 3 and 4 models). Raise for complex cross-page analysis.'
             ),
           seed: z
             .number()
@@ -1281,6 +1294,144 @@ server.registerTool<any, any>(
   }
 );
 
+// Register evaluate_media tool (Decisions API: calibrated checks, no prose)
+server.registerTool<any, any>(
+  'evaluate_media',
+  {
+    title: 'Evaluate Media (calibrated checks)',
+    description:
+      'Answer closed-ended questions about images, videos, audio, PDFs or text with calibrated probabilities instead of prose (Gemini Decisions API). Three question types: "yes_no" (probability the statement holds), "choice" (pick one option from a fixed list), "score" (rate against ordered rubric levels). All questions are evaluated independently in ONE call against the same input, typically in under a second for images, with zero output tokens. Use it for anything you want to branch on or verify: visual assertions on screenshots ("is an error banner visible?", "is the submit button disabled?"), UI state classification, checking a recording for an event, triaging documents. Each answer includes a confidence value and a lowConfidence flag (below 0.7) - treat low-confidence answers as "unsure" and follow up with analyze_image/analyze_video. Use the analyze_* tools instead when you need descriptions, extracted text, or explanations. Not supported: YouTube URLs, gs:// URIs, Office documents.',
+    inputSchema: z.object({
+      mediaSources: z
+        .array(z.string())
+        .max(16)
+        .optional()
+        .describe(
+          'Media to evaluate (0-16): images, videos, audio files or PDFs as local file paths, HTTPS URLs, base64 data URIs, or files/ references. All questions see all media. Optional when context is provided.'
+        ),
+      context: z
+        .string()
+        .optional()
+        .describe(
+          'Optional text shared by all questions: background the questions need, or the full input when evaluating text only (serialize structured data as JSON text).'
+        ),
+      questions: z
+        .array(
+          z.object({
+            id: z
+              .string()
+              .describe(
+                'Key for this answer in the result (1-64 chars: letters, digits, "_" or "-"). The model never sees it.'
+              ),
+            type: z
+              .enum(['yes_no', 'choice', 'score'])
+              .describe(
+                '"yes_no" = probability that the answer is yes; "choice" = pick one of options; "score" = rate on ordered levels'
+              ),
+            question: z
+              .string()
+              .describe(
+                'The complete question, phrased positively and about ONE thing, e.g. "Does the screenshot show an error message or alert?"'
+              ),
+            yesMeans: z
+              .string()
+              .optional()
+              .describe(
+                'yes_no only: what counts as yes, when the question alone is ambiguous'
+              ),
+            noMeans: z
+              .string()
+              .optional()
+              .describe('yes_no only: what counts as no'),
+            options: z
+              .union([z.record(z.string(), z.string()), z.array(z.string())])
+              .optional()
+              .describe(
+                'choice only (2-255 options): an object mapping each option id to a short description of when it applies, e.g. {"dashboard": "Monitoring or metrics page", "form": "Data entry form", "other": "Anything else"}, or an array of self-explanatory option ids. Include a catch-all such as "other".'
+              ),
+            levels: z
+              .array(z.string())
+              .optional()
+              .describe(
+                'score only (2-255 levels): level descriptions ordered from lowest to highest, e.g. ["Everything healthy", "Minor degradation", "One component failing", "Widespread outage"]. Keep adjacent levels clearly distinct.'
+              ),
+          })
+        )
+        .min(1)
+        .max(1000)
+        .describe('The questions to evaluate (1-1000).'),
+      options: z
+        .object({
+          mediaResolution: z
+            .enum(['low', 'medium', 'high', 'ultra_high'])
+            .optional()
+            .describe(
+              'Token resolution for images and video frames. Use "high" or "ultra_high" (images only) when the questions depend on small text or fine detail.'
+            ),
+        })
+        .optional(),
+    }),
+  },
+  async (args: any, _extra: any) => {
+    const { mediaSources, context, questions, options } = args;
+    try {
+      const { config, imageProvider, imageFileService, videoFileService } =
+        getServices();
+
+      const result = await withProgressHeartbeat(
+        _extra,
+        'Evaluating media',
+        () =>
+          evaluate_media(
+            { mediaSources, context, questions, options },
+            config,
+            imageProvider,
+            imageFileService,
+            videoFileService
+          )
+      );
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      void logger.error(
+        { msg: 'Error executing evaluate_media tool', error: String(error) },
+        'tools/evaluate_media'
+      );
+
+      let errorMessage = 'An unknown error occurred';
+      if (error instanceof VisionError) {
+        errorMessage = `${error.name}: ${error.message}`;
+        if (error.provider) {
+          errorMessage += ` (Provider: ${error.provider})`;
+        }
+      } else if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              { error: true, message: errorMessage, tool: 'evaluate_media' },
+              null,
+              2
+            ),
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
 // Register start_video_analysis tool (async job pattern for big files)
 server.registerTool<any, any>(
   'start_video_analysis',
@@ -1315,7 +1466,7 @@ server.registerTool<any, any>(
           thinkingLevel: z
             .enum(['minimal', 'low', 'medium', 'high'])
             .optional(),
-          processing: z.enum(['agentic', 'static']).optional(),
+          processing: z.enum(['auto', 'agentic', 'static']).optional(),
           seed: z.number().int().optional(),
         })
         .optional(),
@@ -1626,10 +1777,10 @@ server.registerTool<any, any>(
             .number()
             .int()
             .min(1)
-            .max(8192)
+            .max(65536)
             .optional()
             .describe(
-              'Maximum number of tokens to generate in the response. For video analysis, recommend 2000-4000 tokens for comprehensive temporal understanding.'
+              'Output cap in tokens. Thinking tokens count against it, so a small value truncates or empties the answer; leave unset unless you need a hard limit (Gemini 4 models are raised to at least 32768).'
             ),
           videoMetadata: z
             .object({
@@ -1668,13 +1819,13 @@ server.registerTool<any, any>(
             .enum(['minimal', 'low', 'medium', 'high'])
             .optional()
             .describe(
-              'Reasoning depth (Gemini 3+ models only). Use "high" for hard visual reasoning or precise OCR of on-screen text; "minimal"/"low" for fast scene summaries. Thinking tokens count toward maxTokens, so pair "high" with maxTokens >= 4000 or the answer gets truncated. Gemini 3.7+ does not support "minimal" (auto-upgraded to "low").'
+              'Reasoning depth (Gemini 3 and 4 models). Use "high" for hard visual reasoning; "low" for fast scene summaries. Thinking tokens count toward maxTokens. "minimal" only exists on gemini-3.5-flash-lite and 3.6-flash; it is raised to "low" on gemini-3.8-flash and Gemini 4.'
             ),
           processing: z
-            .enum(['agentic', 'static'])
+            .enum(['auto', 'agentic', 'static'])
             .optional()
             .describe(
-              'Video processing mode (Gemini 3.6+/3.5-flash-lite). "agentic" (default) lets the model navigate the video on demand - transcript search plus targeted frame fetches - cutting tokens by up to ~97% on long videos with equal or better accuracy; ideal for long content and moment retrieval. "static" ingests frames at a fixed rate; required when using videoMetadata (clipping/fps) and preferred for exhaustive frame-precise inspection of short clips. videoMetadata automatically forces static.'
+              'Video processing mode. "auto" (default) picks by duration: static for clips under 5 minutes, agentic for longer videos or when the duration is unknown (YouTube). "static" ingests frames at a fixed rate in one pass - fastest and cheapest for short clips, broad summaries, and frame-precise inspection; required with videoMetadata (clipping/fps). "agentic" lets the model navigate the video on demand (transcript search plus targeted frame fetches) - up to 88% fewer tokens on long videos and best for finding specific moments. On short clips it is slower and its cost depends on the question (each navigation step is billed as tool-use and thinking tokens, so a full summary can cost several times more than static). The mode used is reported in metadata.videoProcessing.'
             ),
           seed: z
             .number()
@@ -1794,10 +1945,10 @@ server.registerTool<any, any>(
             .number()
             .int()
             .min(1)
-            .max(8192)
+            .max(65536)
             .optional()
             .describe(
-              'Maximum number of tokens to generate in the response. For design audits, 1000-1500 tokens typically sufficient.'
+              'Output cap in tokens. Thinking tokens count against it, so a small value truncates or empties the answer; leave unset unless you need a hard limit (Gemini 4 models are raised to at least 32768).'
             ),
         })
         .optional(),

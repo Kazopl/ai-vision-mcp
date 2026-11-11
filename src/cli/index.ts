@@ -8,6 +8,7 @@ import { runAnalyzeVideo } from './commands/analyze-video.js';
 import { runAnalyzeAudio } from './commands/analyze-audio.js';
 import { runTranscribeAudio } from './commands/transcribe-audio.js';
 import { runAnalyzeDocument } from './commands/analyze-document.js';
+import { runEvaluateMedia } from './commands/evaluate-media.js';
 import { runAuditDesign } from './commands/audit-design.js';
 import { runExtractFrame } from './commands/extract-frame.js';
 import { runEditImage } from './commands/edit-image.js';
@@ -45,6 +46,9 @@ export async function runCli(args: string[]): Promise<void> {
     case 'analyze-document':
       await runAnalyzeDocument(commandArgs, config);
       break;
+    case 'evaluate-media':
+      await runEvaluateMedia(commandArgs, config);
+      break;
     case 'audit-design':
       await runAuditDesign(commandArgs, config);
       break;
@@ -80,7 +84,8 @@ Commands:
   analyze-video <source>       Analyze a video
   analyze-audio <source>       Analyze audio (questions, summaries, sound description)
   transcribe-audio <source>    Dedicated speech-to-text (timestamps, diarization, 85+ languages)
-  analyze-document <source>    Analyze documents (PDF tables/charts/scans + text formats)
+  analyze-document <source>    Analyze documents (PDF, Word, PowerPoint, Excel, OpenDocument, text)
+  evaluate-media [sources...]  Calibrated yes/no, choice and score answers (no prose, ~1s for images)
   audit-design <source>        Audit design compliance (pixel metrics + Gemini critique)
   extract-frame <source>       Extract video frames via ffmpeg (local, no AI call)
   edit-image <sources...>      Edit/annotate/compose images (Nano Banana, 1-14 inputs; --video for thumbnails)
@@ -106,5 +111,7 @@ Examples:
   ai-vision audit-design design.png --prompt "check accessibility"
   ai-vision extract-frame demo.mp4 --timestamps "00:12,01:30" --crop "0,0,1280,120"
   ai-vision extract-frame demo.mp4 --scene-detect --max-frames 10
+  ai-vision evaluate-media shot.png --ask "Is an error message visible?"
+  ai-vision analyze-video demo.mp4 --prompt "summarize" --processing static
 `);
 }

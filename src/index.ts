@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   // Check if running in CLI mode
   // CLI mode: first arg is a command (analyze-image, compare-images, etc.)
   // MCP mode: no args or args start with --
-  const commands = ['analyze-image', 'compare-images', 'detect-objects', 'segment-objects', 'analyze-video', 'analyze-audio', 'transcribe-audio', 'analyze-document', 'audit-design', 'extract-frame', 'edit-image', 'help'];
+  const commands = ['analyze-image', 'compare-images', 'detect-objects', 'segment-objects', 'analyze-video', 'analyze-audio', 'transcribe-audio', 'analyze-document', 'evaluate-media', 'audit-design', 'extract-frame', 'edit-image', 'help'];
   const isCliMode = args.length > 0 && commands.includes(args[0]);
 
   if (isCliMode) {

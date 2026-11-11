@@ -32,6 +32,7 @@ export interface Config {
   EDIT_IMAGE_MODEL?: string;
   ANALYZE_DOCUMENT_MODEL?: string;
   TRANSCRIBE_AUDIO_MODEL?: string;
+  DECISION_MODEL?: string;
 
   // Google Cloud Storage configuration (for Vertex AI file storage)
   // Uses VERTEX_CLIENT_EMAIL, VERTEX_PRIVATE_KEY, VERTEX_PROJECT_ID for auth
@@ -53,8 +54,16 @@ export interface Config {
   THINKING_LEVEL_FOR_IMAGE?: string;
   THINKING_LEVEL_FOR_VIDEO?: string;
 
-  // Video processing mode (Gemini 3.6+, 3.5-flash-lite): 'agentic' | 'static'
+  // Video processing mode: 'auto' (default) | 'agentic' | 'static'
   VIDEO_PROCESSING?: string;
+  // In auto mode, videos at least this long (seconds) use agentic processing
+  VIDEO_AGENTIC_MIN_DURATION?: number;
+
+  // Gemini Developer API version (default 'v1beta')
+  GEMINI_API_VERSION?: string;
+
+  // Request logging on Google's side: 'false' (default) | 'true' | 'project'
+  GEMINI_STORE_REQUESTS?: string;
 
   // Agentic Vision default for image analysis (Gemini 3+): 'true' | 'false'
   AGENTIC_VISION?: string;

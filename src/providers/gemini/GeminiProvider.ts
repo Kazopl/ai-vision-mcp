@@ -5,7 +5,10 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { GoogleGenAI, setDefaultBaseUrls } from '@google/genai';
-import { BaseVisionProvider } from '../base/VisionProvider.js';
+import {
+  BaseVisionProvider,
+  parseDurationSeconds,
+} from '../base/VisionProvider.js';
 import { FUNCTION_NAMES } from '../../constants/FunctionNames.js';
 import type {
   GeminiConfig,
@@ -41,8 +44,21 @@ import {
 import {
   loadDocumentSource,
   getDocumentMimeType,
+  getDocumentProcessingNote,
 } from '../../utils/documentSourceHandler.js';
 import { ConfigService } from '../../services/ConfigService.js';
+import type {
+  DecisionMediaInput,
+  DecisionQuestion,
+  EvaluateMediaOptions,
+  EvaluateMediaResult,
+} from '../../types/Decision.js';
+import {
+  buildDecisionQuestions,
+  mapDecisionAnswers,
+  formatDecisionSummary,
+  extractDecisionsErrorMessage,
+} from '../../utils/decisions.js';
 import type {
   EditImageInput,
   EditImageOptions,
@@ -66,11 +82,23 @@ export class GeminiProvider extends BaseVisionProvider {
 
     this.client = new GoogleGenAI({
       apiKey: config.apiKey,
+      // @google/genai 3.x defaults to API version v1, which rejects agentic
+      // video, transcription options and the Decisions API. Pin v1beta (the
+      // SDK default through 2.x) unless GEMINI_API_VERSION overrides it.
+      apiVersion: this.configService.getGeminiApiVersion(),
       // Generous timeout: agentic vision/video runs multi-round server-side
       // loops that can take minutes
       httpOptions: { timeout: this.configService.getGeminiTimeoutMs() },
     });
     this.baseUrl = config.baseUrl;
+  }
+
+  /** Request-logging flag for hand-built configs (see getStoreRequests). */
+  private applyStoreFlag(config: Record<string, unknown>): void {
+    const store = this.configService.getStoreRequests();
+    if (store !== undefined) {
+      config.store = store;
+    }
   }
 
   private validateEndpoint(endpoint: string): void {
@@ -238,23 +266,19 @@ export class GeminiProvider extends BaseVisionProvider {
         });
 
       const text = response.text || '';
-      const usage = response.usageMetadata;
+
+      this.ensureTextOutput(response, text, model);
 
       return this.createAnalysisResult(
         text,
         model,
-        usage
-          ? {
-            promptTokenCount: usage.promptTokenCount || 0,
-            candidatesTokenCount: usage.candidatesTokenCount || 0,
-            totalTokenCount: usage.totalTokenCount || 0,
-          }
-          : undefined,
+        this.mapUsage(response.usageMetadata),
         processingDuration + analysisDuration,
         content.fileData?.mimeType || content.inlineData?.mimeType,
         fileSize,
         response.modelVersion,
-        response.responseId
+        response.responseId,
+        { finishReason: response.candidates?.[0]?.finishReason }
       );
     } catch (error) {
       throw this.handleError(error, 'image analysis');
@@ -404,23 +428,19 @@ export class GeminiProvider extends BaseVisionProvider {
         });
 
       const text = response.text || '';
-      const usage = response.usageMetadata;
+
+      this.ensureTextOutput(response, text, model);
 
       return this.createAnalysisResult(
         text,
         model,
-        usage
-          ? {
-            promptTokenCount: usage.promptTokenCount || 0,
-            candidatesTokenCount: usage.candidatesTokenCount || 0,
-            totalTokenCount: usage.totalTokenCount || 0,
-          }
-          : undefined,
+        this.mapUsage(response.usageMetadata),
         totalProcessingDuration + analysisDuration,
         'image/multiple',
         totalFileSize,
         response.modelVersion,
-        response.responseId
+        response.responseId,
+        { finishReason: response.candidates?.[0]?.finishReason }
       );
     } catch (error) {
       throw this.handleError(error, 'image comparison');
@@ -435,6 +455,8 @@ export class GeminiProvider extends BaseVisionProvider {
     try {
       let content: any;
       let uploadDuration = 0;
+      // Known only for Files API uploads; undefined for YouTube and inline
+      let durationSeconds: number | undefined;
 
       // Process the video source using shared utility
       const { fileUri, mimeType, uploadDuration: processDuration, isInlineData } =
@@ -476,6 +498,7 @@ export class GeminiProvider extends BaseVisionProvider {
         // processVideoSource may not match the uploaded file (e.g. .mov =>
         // video/quicktime), and a mismatch makes the API reject the request
         // with INVALID_ARGUMENT, so resolve the real one from file metadata.
+        // The same lookup yields the duration used by auto processing mode.
         let resolvedMimeType = mimeType;
         if (isFileReferenceSource(fileUri) && !isYouTubeUrl(fileUri)) {
           try {
@@ -484,6 +507,7 @@ export class GeminiProvider extends BaseVisionProvider {
             if (metadata.mimeType) {
               resolvedMimeType = metadata.mimeType;
             }
+            durationSeconds = parseDurationSeconds(metadata.videoDuration);
           } catch {
             // Keep the fallback mimeType if metadata lookup fails
           }
@@ -534,47 +558,52 @@ export class GeminiProvider extends BaseVisionProvider {
         content.mediaResolution = partMediaResolution;
       }
 
-      // Agentic video understanding (default on supported models): the model
-      // navigates the video on demand instead of ingesting every frame.
+      // Processing mode: static for short clips, agentic for long videos
+      // (auto), or whatever options.processing / VIDEO_PROCESSING forces.
       const videoProcessing = this.getVideoPartProcessing(
-        this.resolveModelForFunction('video', options?.functionName),
-        options
+        model,
+        options,
+        durationSeconds
       );
       if (videoProcessing) {
         content.mediaProcessing = videoProcessing;
       }
 
+      const requestConfig = this.buildConfigWithOptions(
+        'video',
+        options?.functionName,
+        options
+      );
       const { result: response, duration: analysisDuration } =
         await this.measureAsync(async () => {
           return await this.client.models.generateContent({
             model,
             contents: [content, { text: prompt }],
-            config: this.buildConfigWithOptions(
-              'video',
-              options?.functionName,
-              options
-            ),
+            config: requestConfig,
           });
         });
 
       const text = response.text || '';
-      const usage = response.usageMetadata;
+      this.ensureTextOutput(
+        response,
+        text,
+        model,
+        requestConfig.maxOutputTokens
+      );
 
       return this.createAnalysisResult(
         text,
         model,
-        usage
-          ? {
-            promptTokenCount: usage.promptTokenCount || 0,
-            candidatesTokenCount: usage.candidatesTokenCount || 0,
-            totalTokenCount: usage.totalTokenCount || 0,
-          }
-          : undefined,
+        this.mapUsage(response.usageMetadata),
         uploadDuration + analysisDuration,
         content.fileData?.mimeType || content.inlineData?.mimeType,
         undefined, // fileSize not available for video
         response.modelVersion,
-        response.responseId
+        response.responseId,
+        {
+          finishReason: response.candidates?.[0]?.finishReason,
+          videoProcessing: videoProcessing ? 'agentic' : 'static',
+        }
       );
     } catch (error) {
       throw this.handleError(error, 'video analysis');
@@ -770,7 +799,9 @@ export class GeminiProvider extends BaseVisionProvider {
         segments.push(part.text);
       } else if (part.audioTranscription?.text) {
         const t = part.audioTranscription;
-        const startOffset = t.words?.[0]?.startOffset;
+        // Segment-level offsets (SDK 2.29+) when present, else the first
+        // word's offset (only populated with wordTimestamps).
+        const startOffset = t.startOffset ?? t.words?.[0]?.startOffset;
         const prefix = [
           startOffset ? `[${startOffset}]` : null,
           t.speakerLabel ? `[${t.speakerLabel}]` : null,
@@ -811,23 +842,19 @@ export class GeminiProvider extends BaseVisionProvider {
         });
 
       const text = this.extractTextWithTranscription(response);
-      const usage = response.usageMetadata;
+
+      this.ensureTextOutput(response, text, model);
 
       return this.createAnalysisResult(
         text,
         model,
-        usage
-          ? {
-            promptTokenCount: usage.promptTokenCount || 0,
-            candidatesTokenCount: usage.candidatesTokenCount || 0,
-            totalTokenCount: usage.totalTokenCount || 0,
-          }
-          : undefined,
+        this.mapUsage(response.usageMetadata),
         processingDuration + analysisDuration,
         content.fileData?.mimeType || content.inlineData?.mimeType,
         fileSize,
         response.modelVersion,
-        response.responseId
+        response.responseId,
+        { finishReason: response.candidates?.[0]?.finishReason }
       );
     } catch (error) {
       throw this.handleError(error, 'audio analysis');
@@ -882,6 +909,7 @@ export class GeminiProvider extends BaseVisionProvider {
       }
       const safetySettings = this.configService.getSafetySettings();
       if (safetySettings) config.safetySettings = safetySettings;
+      this.applyStoreFlag(config);
 
       const { result: response, duration: analysisDuration } =
         await this.measureAsync(async () => {
@@ -892,28 +920,105 @@ export class GeminiProvider extends BaseVisionProvider {
           });
         });
 
+      // An empty transcript is a valid result (audio without speech), so
+      // unlike the analysis paths this does not go through ensureTextOutput.
       const text = this.extractTextWithTranscription(response);
-      const usage = response.usageMetadata;
 
       return this.createAnalysisResult(
         text,
         model,
-        usage
-          ? {
-            promptTokenCount: usage.promptTokenCount || 0,
-            candidatesTokenCount: usage.candidatesTokenCount || 0,
-            totalTokenCount: usage.totalTokenCount || 0,
-          }
-          : undefined,
+        this.mapUsage(response.usageMetadata),
         processingDuration + analysisDuration,
         content.fileData?.mimeType,
         fileSize,
         response.modelVersion,
-        response.responseId
+        response.responseId,
+        { finishReason: response.candidates?.[0]?.finishReason }
       );
     } catch (error) {
       throw this.handleError(error, 'audio transcription');
     }
+  }
+
+  /**
+   * Resolve a document source (files/ ref, local path, data URI, or URL) to
+   * a fileData content part via the canonical Files API upload path.
+   */
+  private async resolveDocumentContent(documentSource: string): Promise<{
+    content: any;
+    fileSize?: number;
+    processingDuration: number;
+  }> {
+    let processingDuration = 0;
+
+    if (isFileReferenceSource(documentSource)) {
+      // Files API reference: resolve the real mimeType from metadata
+      let mimeType = 'application/pdf';
+      try {
+        const fileId = `files/${documentSource.split('/').pop()}`;
+        const metadata = await this.getFileMetadata(fileId);
+        if (metadata.mimeType) mimeType = metadata.mimeType;
+      } catch {
+        // keep fallback
+      }
+      return {
+        content: { fileData: { fileUri: documentSource, mimeType } },
+        processingDuration,
+      };
+    }
+
+    // Canonical single upload path: Files API for every size.
+    let uploadedFile: UploadedFile;
+    let fileSize: number | undefined;
+    const isLocalFile =
+      !documentSource.startsWith('data:') &&
+      !/^https?:\/\//i.test(documentSource);
+
+    if (isLocalFile) {
+      const stat = await fs.stat(documentSource).catch(() => {
+        throw new FileNotFoundError(documentSource);
+      });
+      fileSize = stat.size;
+      const { result, duration } = await this.measureAsync(async () => {
+        return await this.uploadFileFromPath(
+          documentSource,
+          getDocumentMimeType(documentSource),
+          path.basename(documentSource)
+        );
+      });
+      uploadedFile = result;
+      processingDuration += duration;
+    } else {
+      const { result: loaded, duration: loadDuration } =
+        await this.measureAsync(async () => loadDocumentSource(documentSource));
+      processingDuration += loadDuration;
+      fileSize = loaded.buffer.length;
+
+      const { result, duration: uploadDuration } = await this.measureAsync(
+        async () => {
+          return await this.uploadFile(
+            loaded.buffer,
+            loaded.filename,
+            loaded.mimeType
+          );
+        }
+      );
+      uploadedFile = result;
+      processingDuration += uploadDuration;
+    }
+
+    const fileId = uploadedFile.uri!.split('/').pop()!;
+    await this.waitForFileProcessing(fileId);
+    return {
+      content: {
+        fileData: {
+          fileUri: uploadedFile.uri!,
+          mimeType: uploadedFile.mimeType,
+        },
+      },
+      fileSize,
+      processingDuration,
+    };
   }
 
   async analyzeDocument(
@@ -922,82 +1027,20 @@ export class GeminiProvider extends BaseVisionProvider {
     options?: AnalysisOptions
   ): Promise<AnalysisResult> {
     try {
-      let content: any;
-      let fileSize: number | undefined;
-      let processingDuration = 0;
+      const { content, fileSize, processingDuration } =
+        await this.resolveDocumentContent(documentSource);
 
-      if (isFileReferenceSource(documentSource)) {
-        // Files API reference: resolve the real mimeType from metadata
-        let mimeType = 'application/pdf';
-        try {
-          const fileId = `files/${documentSource.split('/').pop()}`;
-          const metadata = await this.getFileMetadata(fileId);
-          if (metadata.mimeType) mimeType = metadata.mimeType;
-        } catch {
-          // keep fallback
-        }
-        content = { fileData: { fileUri: documentSource, mimeType } };
-      } else {
-        // Canonical single upload path: Files API for every size.
-        let uploadedFile: UploadedFile;
-        const isLocalFile =
-          !documentSource.startsWith('data:') &&
-          !/^https?:\/\//i.test(documentSource);
-
-        if (isLocalFile) {
-          const stat = await fs.stat(documentSource).catch(() => {
-            throw new FileNotFoundError(documentSource);
-          });
-          fileSize = stat.size;
-          const { result, duration } = await this.measureAsync(async () => {
-            return await this.uploadFileFromPath(
-              documentSource,
-              getDocumentMimeType(documentSource),
-              path.basename(documentSource)
-            );
-          });
-          uploadedFile = result;
-          processingDuration += duration;
-        } else {
-          const { result: loaded, duration: loadDuration } =
-            await this.measureAsync(async () =>
-              loadDocumentSource(documentSource)
-            );
-          processingDuration += loadDuration;
-          fileSize = loaded.buffer.length;
-
-          const { result, duration: uploadDuration } = await this.measureAsync(
-            async () => {
-              return await this.uploadFile(
-                loaded.buffer,
-                loaded.filename,
-                loaded.mimeType
-              );
-            }
-          );
-          uploadedFile = result;
-          processingDuration += uploadDuration;
-        }
-
-        const fileId = uploadedFile.uri!.split('/').pop()!;
-        await this.waitForFileProcessing(fileId);
-        content = {
-          fileData: {
-            fileUri: uploadedFile.uri!,
-            mimeType: uploadedFile.mimeType,
-          },
-        };
-      }
-
-      // PDF pages are tokenized like images: part-level mediaResolution
-      // applies (ultra_high included, for dense tables / small print).
-      const partMediaResolution = this.getPartMediaResolution(
-        'image',
-        options
-      );
-      if (partMediaResolution) {
-        content.mediaResolution = partMediaResolution;
-      }
+      // The API rejects ultra_high on document parts (INVALID_ARGUMENT for
+      // PDF and Office files alike), so documents top out at 'high', sent at
+      // the request level. This matters because documents inherit the image
+      // resolution setting, which is often ultra_high for screenshots.
+      const requestedResolution =
+        options?.mediaResolution ??
+        this.configService.getMediaResolutionForTask('image');
+      const documentOptions: AnalysisOptions | undefined =
+        requestedResolution === 'ultra_high'
+          ? { ...options, mediaResolution: 'high' }
+          : options;
 
       const model = this.resolveModelForFunction(
         'image',
@@ -1012,32 +1055,149 @@ export class GeminiProvider extends BaseVisionProvider {
             config: this.buildConfigWithOptions(
               'image',
               options?.functionName,
-              options
+              documentOptions
             ),
           });
         });
 
       const text = response.text || '';
-      const usage = response.usageMetadata;
 
+      this.ensureTextOutput(response, text, model);
+
+      const mimeType: string | undefined = content.fileData?.mimeType;
       return this.createAnalysisResult(
         text,
         model,
-        usage
-          ? {
-            promptTokenCount: usage.promptTokenCount || 0,
-            candidatesTokenCount: usage.candidatesTokenCount || 0,
-            totalTokenCount: usage.totalTokenCount || 0,
-          }
-          : undefined,
+        this.mapUsage(response.usageMetadata),
         processingDuration + analysisDuration,
-        content.fileData?.mimeType || content.inlineData?.mimeType,
+        mimeType,
         fileSize,
         response.modelVersion,
-        response.responseId
+        response.responseId,
+        {
+          finishReason: response.candidates?.[0]?.finishReason,
+          note: mimeType ? getDocumentProcessingNote(mimeType) : undefined,
+        }
       );
     } catch (error) {
       throw this.handleError(error, 'document analysis');
+    }
+  }
+
+  /** Real MIME type of a Files API reference, from its metadata. */
+  async getFileReferenceInfo(
+    fileRef: string
+  ): Promise<{ uri: string; mimeType: string }> {
+    const fileId = `files/${fileRef.split('/').pop()}`;
+    const metadata = await this.getFileMetadata(fileId);
+    return { uri: metadata.uri || fileRef, mimeType: metadata.mimeType };
+  }
+
+  /**
+   * Upload (or pass through) an audio or document source and return its
+   * Files API reference. Shares the canonical upload path with
+   * analyze_audio / analyze_document.
+   */
+  async prepareFileReference(
+    source: string,
+    kind: 'audio' | 'document'
+  ): Promise<{ uri: string; mimeType: string }> {
+    const { content } =
+      kind === 'audio'
+        ? await this.resolveAudioContent(source)
+        : await this.resolveDocumentContent(source);
+    return {
+      uri: content.fileData.fileUri,
+      mimeType: content.fileData.mimeType,
+    };
+  }
+
+  /**
+   * Decisions API (gemini-decision-1): score yes/no, choice and rubric
+   * questions against shared text/media input. Returns calibrated
+   * probabilities and generates no output tokens. v1beta only.
+   */
+  async evaluateMedia(
+    media: DecisionMediaInput[],
+    questions: DecisionQuestion[],
+    context?: string,
+    options?: EvaluateMediaOptions
+  ): Promise<EvaluateMediaResult> {
+    const model = this.configService.getDecisionModel();
+    const apiQuestions = buildDecisionQuestions(questions);
+
+    const input: any[] = [];
+    if (context?.trim()) {
+      input.push({ type: 'text', text: context.trim() });
+    }
+    for (const item of media) {
+      const block: any = {
+        type: item.kind,
+        // With a Files API URI the MIME type must equal the uploaded file's
+        // recorded type exactly (aliases such as video/mov are rejected).
+        mime_type: item.mimeType,
+        ...(item.data ? { data: item.data } : { uri: item.uri }),
+      };
+      const resolution = options?.mediaResolution;
+      if (resolution && (item.kind === 'image' || item.kind === 'video')) {
+        // ultra_high is image-only; the API rejects it on video blocks
+        block.resolution =
+          resolution === 'ultra_high' && item.kind === 'video'
+            ? 'high'
+            : resolution;
+      }
+      input.push(block);
+    }
+    if (input.length === 0) {
+      throw new ProviderError(
+        'evaluate_media needs at least one media source or a context text',
+        this.providerName
+      );
+    }
+
+    try {
+      const { result, duration } = await this.measureAsync(async () => {
+        return await (this.client as any).decisions.create({
+          model,
+          input,
+          questions: apiQuestions,
+        });
+      });
+
+      const answers = mapDecisionAnswers(result?.answers, questions);
+      const usage = result?.usage ?? {};
+      const byModality: Record<string, number> = {};
+      for (const entry of usage.input_tokens_by_modality ?? []) {
+        if (entry?.modality) byModality[entry.modality] = entry.tokens ?? 0;
+      }
+
+      return {
+        answers,
+        summary: formatDecisionSummary(answers, questions),
+        metadata: {
+          model,
+          provider: this.providerName,
+          usage: {
+            inputTokens: usage.total_input_tokens ?? 0,
+            outputTokens: usage.total_output_tokens ?? 0,
+            ...(Object.keys(byModality).length > 0
+              ? { inputTokensByModality: byModality }
+              : {}),
+          },
+          processingTime: duration,
+          mediaCount: media.length,
+        },
+      };
+    } catch (error) {
+      const message = extractDecisionsErrorMessage(error);
+      const hint = /\b404\b/.test(message)
+        ? ' The Decisions API exists only on API version v1beta; check GEMINI_API_VERSION.'
+        : '';
+      throw new ProviderError(
+        `Decisions API request failed: ${message}${hint}`,
+        this.providerName,
+        error instanceof Error ? error : undefined
+      );
     }
   }
 
@@ -1092,15 +1252,29 @@ export class GeminiProvider extends BaseVisionProvider {
     try {
       let model = this.configService.getEditImageModel();
 
-      // Video-to-image is exclusive to gemini-3.1-flash-image
+      // Video input needs a video-capable image model. gemini-3-pro-image
+      // rejects it ("Audio input modality is not enabled for this model").
       if (
         options?.videoSource &&
-        model !== ConfigService.VIDEO_TO_IMAGE_MODEL
+        !ConfigService.VIDEO_CAPABLE_IMAGE_MODELS.includes(model)
       ) {
         console.error(
-          `[GeminiProvider] video-to-image requires ${ConfigService.VIDEO_TO_IMAGE_MODEL}; overriding EDIT_IMAGE_MODEL (${model}) for this request`
+          `[GeminiProvider] ${model} cannot take video input; using ${ConfigService.VIDEO_TO_IMAGE_MODEL} for this video-to-image request`
         );
         model = ConfigService.VIDEO_TO_IMAGE_MODEL;
+      }
+
+      // The 512 output size only exists on gemini-3.1-flash-image; newer
+      // models reject it ("Image size 512 is not supported for this model").
+      let imageSize = options?.imageSize;
+      if (
+        imageSize === '512' &&
+        !ConfigService.IMAGE_SIZE_512_MODELS.includes(model)
+      ) {
+        console.error(
+          `[GeminiProvider] imageSize "512" is not supported by ${model}; using "1K"`
+        );
+        imageSize = '1K';
       }
 
       // Image models use a dedicated config: responseModalities + imageConfig.
@@ -1111,10 +1285,11 @@ export class GeminiProvider extends BaseVisionProvider {
       if (safetySettings) {
         config.safetySettings = safetySettings;
       }
-      if (options?.aspectRatio || options?.imageSize) {
+      this.applyStoreFlag(config);
+      if (options?.aspectRatio || imageSize) {
         config.imageConfig = {
           ...(options?.aspectRatio && { aspectRatio: options.aspectRatio }),
-          ...(options?.imageSize && { imageSize: options.imageSize }),
+          ...(imageSize && { imageSize }),
         };
       }
 
@@ -1153,23 +1328,19 @@ export class GeminiProvider extends BaseVisionProvider {
         }
       }
 
-      const usage = response.usageMetadata;
       return {
         images,
         text: textChunks.join('\n').trim(),
         metadata: {
           model,
           provider: this.providerName,
-          usage: usage
-            ? {
-              promptTokenCount: usage.promptTokenCount || 0,
-              candidatesTokenCount: usage.candidatesTokenCount || 0,
-              totalTokenCount: usage.totalTokenCount || 0,
-            }
-            : undefined,
+          usage: this.mapUsage(response.usageMetadata),
           processingTime: duration,
           modelVersion: response.modelVersion,
           responseId: response.responseId,
+          finishReason:
+            response.candidates?.[0]?.finishReason ??
+            response.promptFeedback?.blockReason,
         },
       };
     } catch (error) {
@@ -1368,6 +1539,7 @@ export class GeminiProvider extends BaseVisionProvider {
         uri: file.uri || '',
         state:
           (file.state as 'PROCESSING' | 'ACTIVE' | 'FAILED') || 'PROCESSING',
+        videoDuration: (file as any).videoMetadata?.videoDuration,
       };
     } catch (error) {
       if (error instanceof Error && error.message.includes('404')) {

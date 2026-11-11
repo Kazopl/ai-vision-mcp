@@ -34,6 +34,7 @@ import {
   loadDocumentSource,
   getDocumentMimeType,
 } from '../../utils/documentSourceHandler.js';
+import { ConfigService } from '../../services/ConfigService.js';
 import type {
   EditImageInput,
   EditImageOptions,
@@ -198,26 +199,19 @@ export class VertexAIProvider extends BaseVisionProvider {
         );
 
         const text = response.text || '';
-        const usage = response.usageMetadata;
+
+        this.ensureTextOutput(response, text, model);
 
         return this.createAnalysisResult(
           text,
           model,
-          usage &&
-            usage.promptTokenCount &&
-            usage.candidatesTokenCount &&
-            usage.totalTokenCount
-            ? {
-                promptTokenCount: usage.promptTokenCount,
-                candidatesTokenCount: usage.candidatesTokenCount,
-                totalTokenCount: usage.totalTokenCount,
-              }
-            : undefined,
+          this.mapUsage(response.usageMetadata),
           sourceProcessingDuration + duration,
           mimeType,
           undefined,
           response.modelVersion,
-          response.responseId
+          response.responseId,
+          { finishReason: response.candidates?.[0]?.finishReason }
         );
       }
 
@@ -279,26 +273,19 @@ export class VertexAIProvider extends BaseVisionProvider {
       );
 
       const text = response.text || '';
-      const usage = response.usageMetadata;
+
+      this.ensureTextOutput(response, text, model);
 
       return this.createAnalysisResult(
         text,
         model,
-        usage &&
-          usage.promptTokenCount &&
-          usage.candidatesTokenCount &&
-          usage.totalTokenCount
-          ? {
-              promptTokenCount: usage.promptTokenCount,
-              candidatesTokenCount: usage.candidatesTokenCount,
-              totalTokenCount: usage.totalTokenCount,
-            }
-          : undefined,
+        this.mapUsage(response.usageMetadata),
         sourceProcessingDuration + duration,
         mimeType,
         Buffer.from(base64Data, 'base64').length,
         response.modelVersion,
-        response.responseId
+        response.responseId,
+        { finishReason: response.candidates?.[0]?.finishReason }
       );
     } catch (error) {
       throw this.handleError(error, 'image analysis');
@@ -415,26 +402,19 @@ export class VertexAIProvider extends BaseVisionProvider {
       );
 
       const text = response.text || '';
-      const usage = response.usageMetadata;
+
+      this.ensureTextOutput(response, text, model);
 
       return this.createAnalysisResult(
         text,
         model,
-        usage &&
-          usage.promptTokenCount &&
-          usage.candidatesTokenCount &&
-          usage.totalTokenCount
-          ? {
-              promptTokenCount: usage.promptTokenCount,
-              candidatesTokenCount: usage.candidatesTokenCount,
-              totalTokenCount: usage.totalTokenCount,
-            }
-          : undefined,
+        this.mapUsage(response.usageMetadata),
         totalProcessingDuration + duration,
         'image/multiple',
         totalFileSize,
         response.modelVersion,
-        response.responseId
+        response.responseId,
+        { finishReason: response.candidates?.[0]?.finishReason }
       );
     } catch (error) {
       throw this.handleError(error, 'image comparison');
@@ -503,11 +483,9 @@ export class VertexAIProvider extends BaseVisionProvider {
         videoPart.mediaResolution = videoPartResolution;
       }
 
-      // Agentic video understanding (default on supported models)
-      const videoProcessing = this.getVideoPartProcessing(
-        this.resolveModelForFunction('video', options?.functionName),
-        options
-      );
+      // Processing mode. Vertex sources are gs:// URIs or YouTube URLs, so
+      // the duration is unknown and auto resolves to agentic when supported.
+      const videoProcessing = this.getVideoPartProcessing(model, options);
       if (videoProcessing) {
         videoPart.mediaProcessing = videoProcessing;
       }
@@ -531,26 +509,22 @@ export class VertexAIProvider extends BaseVisionProvider {
         });
 
       const text = response.text || '';
-      const usage = response.usageMetadata;
+
+      this.ensureTextOutput(response, text, model);
 
       return this.createAnalysisResult(
         text,
         model,
-        usage &&
-          usage.promptTokenCount &&
-          usage.candidatesTokenCount &&
-          usage.totalTokenCount
-          ? {
-              promptTokenCount: usage.promptTokenCount,
-              candidatesTokenCount: usage.candidatesTokenCount,
-              totalTokenCount: usage.totalTokenCount,
-            }
-          : undefined,
+        this.mapUsage(response.usageMetadata),
         uploadDuration + analysisDuration,
         mimeType,
         undefined, // fileSize not available for video
         response.modelVersion,
-        response.responseId
+        response.responseId,
+        {
+          finishReason: response.candidates?.[0]?.finishReason,
+          videoProcessing: videoProcessing ? 'agentic' : 'static',
+        }
       );
     } catch (error) {
       throw this.handleError(error, 'video analysis');
@@ -570,10 +544,21 @@ export class VertexAIProvider extends BaseVisionProvider {
       if (editSafetySettings) {
         config.safetySettings = editSafetySettings;
       }
-      if (options?.aspectRatio || options?.imageSize) {
+      // The 512 output size only exists on gemini-3.1-flash-image
+      let imageSize = options?.imageSize;
+      if (
+        imageSize === '512' &&
+        !ConfigService.IMAGE_SIZE_512_MODELS.includes(model)
+      ) {
+        console.error(
+          `[VertexAIProvider] imageSize "512" is not supported by ${model}; using "1K"`
+        );
+        imageSize = '1K';
+      }
+      if (options?.aspectRatio || imageSize) {
         config.imageConfig = {
           ...(options?.aspectRatio && { aspectRatio: options.aspectRatio }),
-          ...(options?.imageSize && { imageSize: options.imageSize }),
+          ...(imageSize && { imageSize }),
         };
       }
 
@@ -606,24 +591,19 @@ export class VertexAIProvider extends BaseVisionProvider {
         }
       }
 
-      const usage = response.usageMetadata;
       return {
         images,
         text: textChunks.join('\n').trim(),
         metadata: {
           model,
           provider: this.providerName,
-          usage:
-            usage && usage.totalTokenCount
-              ? {
-                  promptTokenCount: usage.promptTokenCount || 0,
-                  candidatesTokenCount: usage.candidatesTokenCount || 0,
-                  totalTokenCount: usage.totalTokenCount || 0,
-                }
-              : undefined,
+          usage: this.mapUsage(response.usageMetadata),
           processingTime: duration,
           modelVersion: response.modelVersion,
           responseId: response.responseId,
+          finishReason:
+            response.candidates?.[0]?.finishReason ??
+            response.promptFeedback?.blockReason,
         },
       };
     } catch (error) {
@@ -688,26 +668,19 @@ export class VertexAIProvider extends BaseVisionProvider {
         });
 
       const text = response.text || '';
-      const usage = response.usageMetadata;
+
+      this.ensureTextOutput(response, text, model);
 
       return this.createAnalysisResult(
         text,
         model,
-        usage &&
-          usage.promptTokenCount &&
-          usage.candidatesTokenCount &&
-          usage.totalTokenCount
-          ? {
-              promptTokenCount: usage.promptTokenCount,
-              candidatesTokenCount: usage.candidatesTokenCount,
-              totalTokenCount: usage.totalTokenCount,
-            }
-          : undefined,
+        this.mapUsage(response.usageMetadata),
         processingDuration + analysisDuration,
         audioPart.fileData?.mimeType || audioPart.inlineData?.mimeType,
         fileSize,
         response.modelVersion,
-        response.responseId
+        response.responseId,
+        { finishReason: response.candidates?.[0]?.finishReason }
       );
     } catch (error) {
       throw this.handleError(error, 'audio analysis');
@@ -772,6 +745,15 @@ export class VertexAIProvider extends BaseVisionProvider {
         options?.functionName
       );
 
+      // Documents top out at 'high': the API rejects ultra_high on them.
+      const requestedResolution =
+        options?.mediaResolution ??
+        this.configService.getMediaResolutionForTask('image');
+      const documentOptions: AnalysisOptions | undefined =
+        requestedResolution === 'ultra_high'
+          ? { ...options, mediaResolution: 'high' }
+          : options;
+
       const { result: response, duration: analysisDuration } =
         await this.measureAsync(async () => {
           return await this.client.models.generateContent({
@@ -782,32 +764,25 @@ export class VertexAIProvider extends BaseVisionProvider {
             config: this.buildConfigWithOptions(
               'image',
               options?.functionName,
-              options
+              documentOptions
             ),
           });
         });
 
       const text = response.text || '';
-      const usage = response.usageMetadata;
+
+      this.ensureTextOutput(response, text, model);
 
       return this.createAnalysisResult(
         text,
         model,
-        usage &&
-          usage.promptTokenCount &&
-          usage.candidatesTokenCount &&
-          usage.totalTokenCount
-          ? {
-              promptTokenCount: usage.promptTokenCount,
-              candidatesTokenCount: usage.candidatesTokenCount,
-              totalTokenCount: usage.totalTokenCount,
-            }
-          : undefined,
+        this.mapUsage(response.usageMetadata),
         processingDuration + analysisDuration,
         documentPart.fileData?.mimeType || documentPart.inlineData?.mimeType,
         fileSize,
         response.modelVersion,
-        response.responseId
+        response.responseId,
+        { finishReason: response.candidates?.[0]?.finishReason }
       );
     } catch (error) {
       throw this.handleError(error, 'document analysis');

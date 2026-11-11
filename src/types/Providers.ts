@@ -69,6 +69,22 @@ export interface VisionProvider {
     audioSource: string,
     options?: TranscriptionOptions
   ): Promise<AnalysisResult>;
+  /** Optional: Decisions API - calibrated yes/no, choice and score answers */
+  evaluateMedia?(
+    media: import('./Decision.js').DecisionMediaInput[],
+    questions: import('./Decision.js').DecisionQuestion[],
+    context?: string,
+    options?: import('./Decision.js').EvaluateMediaOptions
+  ): Promise<import('./Decision.js').EvaluateMediaResult>;
+  /** Optional: real MIME type of a provider file reference */
+  getFileReferenceInfo?(
+    fileRef: string
+  ): Promise<{ uri: string; mimeType: string }>;
+  /** Optional: upload an audio/document source and return its file reference */
+  prepareFileReference?(
+    source: string,
+    kind: 'audio' | 'document'
+  ): Promise<{ uri: string; mimeType: string }>;
   /** Optional: image editing/generation via Nano Banana image models */
   editImage?(
     inputs: import('./ImageEdit.js').EditImageInput[],
@@ -163,6 +179,8 @@ export interface GeminiFileMetadata {
   sha256Hash: string;
   uri: string;
   state: 'PROCESSING' | 'ACTIVE' | 'FAILED';
+  /** Video duration, e.g. "98s" (set once a video finishes processing) */
+  videoDuration?: string;
 }
 
 export interface GeminiGenerateContentRequest {

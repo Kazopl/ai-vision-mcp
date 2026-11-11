@@ -67,8 +67,14 @@ export async function edit_image(
     });
 
     if (result.images.length === 0) {
+      const reason = result.metadata.finishReason;
+      const detail = result.text
+        ? `: ${result.text.substring(0, 300)}`
+        : reason && reason !== 'STOP'
+          ? ` (finishReason: ${reason} - the request was refused by the model's content policy; rephrase the prompt or use different media)`
+          : ' (the request may have been refused)';
       throw new VisionError(
-        `The model returned no images${result.text ? `: ${result.text.substring(0, 300)}` : ' (the request may have been refused)'}`,
+        `The model returned no images${detail}`,
         'NO_IMAGE_OUTPUT',
         config.IMAGE_PROVIDER
       );

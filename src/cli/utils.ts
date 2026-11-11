@@ -92,7 +92,11 @@ export function parseOptions(options: Record<string, string>): {
   }
 
   const processing = options.processing;
-  if (processing === 'agentic' || processing === 'static') {
+  if (
+    processing === 'auto' ||
+    processing === 'agentic' ||
+    processing === 'static'
+  ) {
     result.processing = processing;
   }
 

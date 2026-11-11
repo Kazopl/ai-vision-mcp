@@ -34,18 +34,25 @@ export interface AnalysisOptions {
   videoMetadata?: VideoMetadata; // Video clipping and frame rate settings
   mediaResolution?: MediaResolutionLevel; // Token resolution for input media (Gemini 3+)
   thinkingLevel?: ThinkingLevel; // Reasoning depth (Gemini 3+)
-  processing?: VideoProcessingMode; // Video processing mode (Gemini 3.6+, 3.5-flash-lite)
+  processing?: VideoProcessingMode; // Video processing mode: auto (default) | agentic | static
   agenticVision?: boolean; // Agentic Vision: model zooms/crops via code execution (Gemini 3+)
   seed?: number; // Best-effort reproducibility across identical requests
 }
 
 /**
- * Video processing mode. 'agentic' (default on supported models) lets the
- * model navigate the video on demand - transcript search plus targeted frame
- * fetches - massively reducing tokens on long videos. 'static' ingests
- * frames at a fixed rate and is required for videoMetadata (clipping/fps).
+ * Video processing mode.
+ * - 'static' ingests frames at a fixed rate in one pass. Cheapest and
+ *   fastest for short clips and broad summaries, and required for
+ *   videoMetadata (clipping/fps).
+ * - 'agentic' lets the model navigate the video on demand (transcript search
+ *   plus targeted frame fetches). Far cheaper on long videos, but each
+ *   navigation step costs tool-use and thinking tokens, so on short clips it
+ *   is slower and uses more total tokens than static.
+ * - 'auto' (default) picks by duration: static below the agentic threshold
+ *   (VIDEO_AGENTIC_MIN_DURATION, default 300s), agentic at or above it or
+ *   when the duration is unknown (for example YouTube URLs).
  */
-export type VideoProcessingMode = 'agentic' | 'static';
+export type VideoProcessingMode = 'auto' | 'agentic' | 'static';
 
 /**
  * Media resolution for input media tokenization (Gemini 3+ models).
@@ -77,12 +84,25 @@ export interface AnalysisMetadata {
   fileSize?: number;
   modelVersion?: string; // "gemini-3.1-flash-lite"
   responseId?: string; // "abc123..."
+  /** Why generation stopped (STOP, MAX_TOKENS, SAFETY, ...) */
+  finishReason?: string;
+  /** Video processing mode actually used for this request */
+  videoProcessing?: 'agentic' | 'static';
+  /** A caveat about how the input was processed (e.g. first sheet only) */
+  note?: string;
 }
 
 export interface UsageMetadata {
   promptTokenCount: number;
   candidatesTokenCount: number;
   totalTokenCount: number;
+  /** Thinking tokens (billed as output). Share the maxTokens budget. */
+  thoughtsTokenCount?: number;
+  /**
+   * Tokens loaded by built-in tools (billed as input): frames/transcript
+   * fetched by agentic video, images produced by code execution.
+   */
+  toolUsePromptTokenCount?: number;
 }
 
 export interface UploadedFile {

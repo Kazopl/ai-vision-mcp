@@ -57,13 +57,31 @@ export class ConfigService {
   private static readonly DEFAULT_VIDEO_MODEL = 'gemini-3.5-flash-lite';
   // Image EDITING uses the Nano Banana family; analysis models like
   // gemini-3.8-flash cannot generate images, so this never falls back to
-  // IMAGE_MODEL. gemini-3.1-flash-image = Nano Banana 2, GA, stable to
-  // May 2027+.
-  private static readonly DEFAULT_EDIT_IMAGE_MODEL = 'gemini-3.1-flash-image';
+  // IMAGE_MODEL. gemini-nano-banana-2.1 (GA Oct 2026) replaces the
+  // deprecated gemini-3.1-flash-image (Nano Banana 2).
+  private static readonly DEFAULT_EDIT_IMAGE_MODEL = 'gemini-nano-banana-2.1';
   private static readonly DEFAULT_TRANSCRIBE_AUDIO_MODEL =
     'gemini-3.5-transcribe';
-  /** Video-to-image (thumbnails from video) is exclusive to this model. */
-  public static readonly VIDEO_TO_IMAGE_MODEL = 'gemini-3.1-flash-image';
+  private static readonly DEFAULT_DECISION_MODEL = 'gemini-decision-1';
+  /** Model used for video-to-image when EDIT_IMAGE_MODEL cannot take video. */
+  public static readonly VIDEO_TO_IMAGE_MODEL = 'gemini-nano-banana-2.1';
+  /**
+   * Image models that accept video input. gemini-3-pro-image rejects it
+   * ("Audio input modality is not enabled for this model").
+   */
+  public static readonly VIDEO_CAPABLE_IMAGE_MODELS: readonly string[] = [
+    'gemini-nano-banana-2.1',
+    'gemini-3.1-flash-image',
+  ];
+  /** Only this (deprecated) model supports the 512 output size. */
+  public static readonly IMAGE_SIZE_512_MODELS: readonly string[] = [
+    'gemini-3.1-flash-image',
+  ];
+  /**
+   * Gemini 4 counts thinking tokens against maxOutputTokens, so small caps
+   * return empty answers. Google's guidance is at least 32,768.
+   */
+  public static readonly GEMINI_4_MIN_OUTPUT_TOKENS = 32768;
   private config: Config;
   private loggedSummary = false;
   private logger = LoggerService.getInstance('ai-vision-mcp');
@@ -196,9 +214,10 @@ export class ConfigService {
           : 0.8,
         TOP_P: process.env.TOP_P ? parseFloat(process.env.TOP_P) : 0.95,
         TOP_K: process.env.TOP_K ? parseInt(process.env.TOP_K, 10) : 30,
+        // Default (16384) lives in the validation schema
         MAX_TOKENS: process.env.MAX_TOKENS
           ? parseInt(process.env.MAX_TOKENS, 10)
-          : 1000,
+          : undefined,
 
         // Media resolution (Gemini 3+)
         MEDIA_RESOLUTION: process.env.MEDIA_RESOLUTION,
@@ -210,8 +229,16 @@ export class ConfigService {
         THINKING_LEVEL_FOR_IMAGE: process.env.THINKING_LEVEL_FOR_IMAGE,
         THINKING_LEVEL_FOR_VIDEO: process.env.THINKING_LEVEL_FOR_VIDEO,
 
-        // Video processing mode (Gemini 3.6+, 3.5-flash-lite)
+        // Video processing mode: auto (default) | agentic | static
         VIDEO_PROCESSING: process.env.VIDEO_PROCESSING,
+        VIDEO_AGENTIC_MIN_DURATION: process.env.VIDEO_AGENTIC_MIN_DURATION
+          ? parseInt(process.env.VIDEO_AGENTIC_MIN_DURATION, 10)
+          : undefined,
+
+        // Gemini Developer API version + request logging
+        GEMINI_API_VERSION: process.env.GEMINI_API_VERSION,
+        GEMINI_STORE_REQUESTS: process.env.GEMINI_STORE_REQUESTS,
+        DECISION_MODEL: process.env.DECISION_MODEL,
 
         // Agentic Vision default for image analysis (Gemini 3+)
         AGENTIC_VISION: process.env.AGENTIC_VISION,
@@ -646,12 +673,52 @@ export class ConfigService {
   }
 
   /**
-   * Video processing mode. Agentic video understanding is the default:
-   * on supported models it cuts tokens massively and improves accuracy on
-   * long videos (set VIDEO_PROCESSING=static to opt out globally).
+   * Video processing mode. Default 'auto': static for short clips, agentic
+   * for long videos (see getVideoAgenticMinDuration). On short clips static
+   * is predictable and faster, while agentic cost swings with the question
+   * (3.7k to 89k tokens on one 98s clip, vs a steady ~10k static) because
+   * every navigation step costs tool-use and thinking tokens; on long
+   * videos agentic is the cheaper mode. Set VIDEO_PROCESSING=agentic or
+   * static to force one mode globally.
    */
-  public getVideoProcessing(): 'agentic' | 'static' {
-    return this.config.VIDEO_PROCESSING === 'static' ? 'static' : 'agentic';
+  public getVideoProcessing(): 'auto' | 'agentic' | 'static' {
+    const value = this.config.VIDEO_PROCESSING;
+    return value === 'static' || value === 'agentic' ? value : 'auto';
+  }
+
+  /**
+   * Duration (seconds) from which auto mode switches to agentic processing.
+   * Google's guidance: static under ~5 minutes, agentic for longer videos.
+   */
+  public getVideoAgenticMinDuration(): number {
+    return this.config.VIDEO_AGENTIC_MIN_DURATION ?? 300;
+  }
+
+  /**
+   * Gemini Developer API version. @google/genai 3.x defaults to 'v1', which
+   * rejects agentic video ("not enabled for api version v1"), transcription
+   * options and the Decisions API, so this server pins 'v1beta'.
+   */
+  public getGeminiApiVersion(): string {
+    return this.config.GEMINI_API_VERSION ?? 'v1beta';
+  }
+
+  /**
+   * Whether Google may store requests in the project's logs. Since Oct 26,
+   * 2026 new paid projects store generateContent requests by default; media
+   * sent to this server can be sensitive (screenshots, recordings), so the
+   * default here is an explicit opt-out. Returns undefined for 'project',
+   * meaning "send nothing and follow the AI Studio project setting".
+   */
+  public getStoreRequests(): boolean | undefined {
+    const value = this.config.GEMINI_STORE_REQUESTS;
+    if (value === 'project') return undefined;
+    return value === 'true';
+  }
+
+  /** Model for the Decisions API (evaluate_media). */
+  public getDecisionModel(): string {
+    return this.config.DECISION_MODEL ?? ConfigService.DEFAULT_DECISION_MODEL;
   }
 
   /**
@@ -688,9 +755,12 @@ export class ConfigService {
     return this.config.SERVICE_TIER;
   }
 
-  /** HTTP timeout for Gemini API requests (default 5 minutes). */
+  /**
+   * HTTP timeout for Gemini API requests. Default 15 minutes: Google's
+   * guidance for Gemini 4, whose hard prompts can think for several minutes.
+   */
   public getGeminiTimeoutMs(): number {
-    return this.config.GEMINI_TIMEOUT_MS ?? 300000;
+    return this.config.GEMINI_TIMEOUT_MS ?? 900000;
   }
 
   public getTopPForTask(taskType: 'image' | 'video'): number | undefined {

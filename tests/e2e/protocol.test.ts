@@ -10,12 +10,17 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   setupMCPClient,
   teardownMCPClient,
   type TestClient,
   type ServerProcess,
 } from './setup.js';
+
+const packageJson = JSON.parse(
+  readFileSync(new URL('../../package.json', import.meta.url), 'utf8')
+) as { version: string };
 
 describe('MCP Protocol Tests', () => {
   let client: TestClient;
@@ -48,15 +53,16 @@ describe('MCP Protocol Tests', () => {
       expect(serverInfo).toBeDefined();
       expect(serverInfo.name).toBe('ai-vision-mcp');
       expect(serverInfo.version).toBeDefined();
-      expect(serverInfo.version).toBe('0.0.6');
+      // The server reports the version from package.json
+      expect(serverInfo.version).toBe(packageJson.version);
     });
   });
 
   describe('Tools/List', () => {
-    test('should list all 13 tools', async () => {
+    test('should list all 14 tools', async () => {
       const tools = await client.listTools();
 
-      expect(tools.tools).toHaveLength(13);
+      expect(tools.tools).toHaveLength(14);
       expect(tools.tools.map(t => t.name)).toContain('analyze_image');
       expect(tools.tools.map(t => t.name)).toContain('compare_images');
       expect(tools.tools.map(t => t.name)).toContain('detect_objects_in_image');
@@ -65,6 +71,7 @@ describe('MCP Protocol Tests', () => {
       expect(tools.tools.map(t => t.name)).toContain('analyze_audio');
       expect(tools.tools.map(t => t.name)).toContain('transcribe_audio');
       expect(tools.tools.map(t => t.name)).toContain('analyze_document');
+      expect(tools.tools.map(t => t.name)).toContain('evaluate_media');
       expect(tools.tools.map(t => t.name)).toContain('extract_video_frame');
       expect(tools.tools.map(t => t.name)).toContain('edit_image');
       expect(tools.tools.map(t => t.name)).toContain('start_video_analysis');
@@ -251,9 +258,9 @@ describe('MCP Protocol Tests', () => {
       ]);
 
       // All should return the same result
-      expect(tools1.tools).toHaveLength(13);
-      expect(tools2.tools).toHaveLength(13);
-      expect(tools3.tools).toHaveLength(13);
+      expect(tools1.tools).toHaveLength(14);
+      expect(tools2.tools).toHaveLength(14);
+      expect(tools3.tools).toHaveLength(14);
     });
 
     test('should maintain connection after multiple operations', async () => {
@@ -264,7 +271,7 @@ describe('MCP Protocol Tests', () => {
 
       // Connection should still be valid
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(13);
+      expect(tools.tools).toHaveLength(14);
     });
   });
 });

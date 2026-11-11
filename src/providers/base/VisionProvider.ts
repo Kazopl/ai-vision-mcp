@@ -12,15 +12,21 @@ import type {
   ModelCapabilities,
   ProviderInfo,
 } from '../../types/Providers.js';
-import type { TaskType } from '../../types/Analysis.js';
+import type {
+  TaskType,
+  UsageMetadata,
+  AnalysisMetadata,
+} from '../../types/Analysis.js';
 import { type FunctionName } from '../../constants/FunctionNames.js';
 import { ConfigService } from '../../services/ConfigService.js';
 import { LoggerService } from '../../services/LoggerService.js';
+import { ProviderError } from '../../types/Errors.js';
 
 /**
  * Parse the numeric generation from a Gemini model id, e.g.
- * "gemini-3.8-flash" -> 3.8, "gemini-3-flash-preview" -> 3.0.
- * Returns null for non-Gemini models (e.g. gemma).
+ * "gemini-3.8-flash" -> 3.8, "gemini-3-flash-preview" -> 3.0,
+ * "gemini-4-argon" -> 4.0. Returns null for ids without a leading
+ * generation number (gemma, gemini-nano-banana-2.1, gemini-decision-1).
  */
 export function getGeminiVersion(model: string): number | null {
   const match = model.match(/gemini-(\d+)(?:\.(\d+))?/);
@@ -28,7 +34,24 @@ export function getGeminiVersion(model: string): number | null {
   return parseFloat(`${match[1]}.${match[2] ?? '0'}`);
 }
 
-/** Models that support agentic video understanding (launched Sept 2026). */
+/**
+ * Parse a Files API duration string ("98s", "98.104s") into seconds.
+ * Returns undefined when absent or malformed.
+ */
+export function parseDurationSeconds(
+  value: string | undefined | null
+): number | undefined {
+  if (!value) return undefined;
+  const match = /^(\d+(?:\.\d+)?)s$/.exec(String(value).trim());
+  if (!match) return undefined;
+  const seconds = parseFloat(match[1]);
+  return Number.isFinite(seconds) ? seconds : undefined;
+}
+
+/**
+ * Models that support agentic video understanding: Gemini 4, 3.6+ Flash and
+ * 3.5 Flash-Lite (GA since Gemini 4 Argon, Oct 2026).
+ */
 export function supportsAgenticVideo(model: string): boolean {
   const version = getGeminiVersion(model);
   if (version !== null && version >= 3.6) return true;
@@ -99,17 +122,20 @@ export abstract class BaseVisionProvider implements VisionProvider {
   protected createAnalysisResult(
     text: string,
     model: string,
-    usage?: {
-      promptTokenCount: number;
-      candidatesTokenCount: number;
-      totalTokenCount: number;
-    },
+    usage?: UsageMetadata,
     processingTime?: number,
     fileType?: string,
     fileSize?: number,
     modelVersion?: string,
-    responseId?: string
+    responseId?: string,
+    extra?: Pick<AnalysisMetadata, 'finishReason' | 'videoProcessing' | 'note'>
   ): AnalysisResult {
+    // A cut-off answer looks complete to the caller unless it is flagged.
+    const truncationNote =
+      extra?.finishReason === 'MAX_TOKENS'
+        ? `The answer was cut off at the output limit${usage?.thoughtsTokenCount ? ` (${usage.thoughtsTokenCount} tokens went to thinking)` : ''}. Raise maxTokens / MAX_TOKENS or lower thinkingLevel for a complete answer.`
+        : undefined;
+    const note = [extra?.note, truncationNote].filter(Boolean).join(' ');
     return {
       text,
       metadata: {
@@ -121,6 +147,11 @@ export abstract class BaseVisionProvider implements VisionProvider {
         fileSize,
         modelVersion,
         responseId,
+        ...(extra?.finishReason ? { finishReason: extra.finishReason } : {}),
+        ...(extra?.videoProcessing
+          ? { videoProcessing: extra.videoProcessing }
+          : {}),
+        ...(note ? { note } : {}),
       },
     };
   }
@@ -356,7 +387,7 @@ export abstract class BaseVisionProvider implements VisionProvider {
     functionName: FunctionName | undefined,
     directValue: number | undefined
   ): number {
-    const defaultValue = taskType === 'image' ? 500 : 2000;
+    const defaultValue = 16384;
     return this.resolveParameterWithFunction(
       taskType,
       functionName,
@@ -384,12 +415,24 @@ export abstract class BaseVisionProvider implements VisionProvider {
     const geminiVersion = getGeminiVersion(model);
 
     const config: any = {
-      maxOutputTokens: this.resolveMaxTokensForFunction(
-        taskType,
-        functionName,
-        options?.maxTokens
+      maxOutputTokens: this.applyOutputTokenFloor(
+        model,
+        this.resolveMaxTokensForFunction(
+          taskType,
+          functionName,
+          options?.maxTokens
+        )
       ),
     };
+
+    // Request logging opt-out (Gemini Developer API only; Vertex AI has no
+    // such field). See ConfigService.getStoreRequests.
+    if (this.providerName === 'gemini') {
+      const store = this.configService.getStoreRequests();
+      if (store !== undefined) {
+        config.store = store;
+      }
+    }
 
     // Sampling parameters are deprecated for Gemini 3.x and ignored by the
     // backend from 3.6+ (Google's migration guides say to remove them; the
@@ -492,16 +535,25 @@ export abstract class BaseVisionProvider implements VisionProvider {
     // Add thinking configuration for Gemini models
     // Supports both Gemini 2.5 (thinkingBudget) and Gemini 3+ (thinkingLevel)
     // An explicit thinking level (runtime option, then THINKING_LEVEL[_FOR_*]
-    // env vars) wins on Gemini 3+ models. Gemini 2.5 and older only accept
-    // thinkingBudget, so they keep the built-in defaults.
+    // env vars) wins on Gemini 3 and later (including Gemini 4). Gemini 2.5
+    // and older only accept thinkingBudget, so they keep the built-in
+    // defaults.
     const requestedThinkingLevel =
       options?.thinkingLevel ??
       this.configService.getThinkingLevelForTask(taskType);
-    if (requestedThinkingLevel && model.includes('gemini-3')) {
+    if (
+      requestedThinkingLevel &&
+      geminiVersion !== null &&
+      geminiVersion >= 3
+    ) {
       let level = requestedThinkingLevel.toUpperCase();
-      // Gemini 3.7+ rejects MINIMAL ("Thinking level MINIMAL is not
-      // supported for this model"); LOW is the closest supported level.
-      if (level === 'MINIMAL' && geminiVersion !== null && geminiVersion >= 3.7) {
+      // Gemini 3.7+ and Gemini 4 reject MINIMAL ("Thinking level MINIMAL is
+      // not supported for this model"); LOW is the closest supported level.
+      // The 3.x Pro models never supported MINIMAL either.
+      if (
+        level === 'MINIMAL' &&
+        (geminiVersion >= 3.7 || /gemini-3(\.\d+)?-pro/.test(model))
+      ) {
         console.error(
           `[VisionProvider] thinkingLevel "minimal" is not supported by ${model}; using "low" instead`
         );
@@ -527,24 +579,49 @@ export abstract class BaseVisionProvider implements VisionProvider {
   }
 
   /**
-   * Agentic video understanding (Gemini 3.6+, 3.5-flash-lite): the model
-   * navigates the video on demand (transcript search + targeted frame
-   * fetches) instead of ingesting every frame, cutting tokens by up to ~97%
-   * on long videos. Returned value goes on the video Part's mediaProcessing.
+   * Resolve the video processing mode for a request. Returns 'AGENTIC' to
+   * set on the video Part's mediaProcessing, or undefined for static (the
+   * API default).
    *
-   * Enabled by default (VIDEO_PROCESSING env or per-call options.processing
-   * override). Falls back to static when:
+   * Agentic (Gemini 4, 3.6+, 3.5-flash-lite): the model navigates the video
+   * on demand (transcript search + targeted frame fetches) instead of
+   * ingesting every frame. On long videos that cuts tokens by up to 88%. On
+   * short clips its cost depends on the question, because every navigation
+   * step is billed as tool-use and thinking tokens. Measured on one 98s clip
+   * with gemini-3.8-flash (Nov 2026): static was a steady ~9-11k tokens in
+   * 6-24s; agentic ranged from 3.7k tokens (simple question, 9s) to 33k
+   * (find a moment, 55s) and 89k (full summary, 61s).
+   *
+   * Mode comes from options.processing, then VIDEO_PROCESSING (default
+   * 'auto'). Auto picks static below getVideoAgenticMinDuration() seconds
+   * and agentic at or above it, or when the duration is unknown (YouTube,
+   * gs://) since those are usually long and static cost grows linearly.
+   *
+   * Always static when:
    * - videoMetadata (clipping/fps) is present - the API rejects the combo
    * - the model doesn't support agentic processing
    */
   protected getVideoPartProcessing(
     model: string,
-    options?: AnalysisOptions
+    options?: AnalysisOptions,
+    durationSeconds?: number
   ): 'AGENTIC' | undefined {
     const requested =
       options?.processing ?? this.configService.getVideoProcessing();
-    if (requested !== 'agentic') {
+    if (requested === 'static') {
       return undefined;
+    }
+
+    if (requested === 'auto') {
+      const threshold = this.configService.getVideoAgenticMinDuration();
+      if (durationSeconds !== undefined && durationSeconds < threshold) {
+        return undefined;
+      }
+      // Auto never warns: falling back to static below is expected.
+      if (options?.videoMetadata || !supportsAgenticVideo(model)) {
+        return undefined;
+      }
+      return 'AGENTIC';
     }
 
     if (options?.videoMetadata) {
@@ -562,6 +639,74 @@ export abstract class BaseVisionProvider implements VisionProvider {
     }
 
     return 'AGENTIC';
+  }
+
+  /**
+   * Gemini 4 counts thinking tokens against maxOutputTokens, so a small cap
+   * can be spent entirely on reasoning and return an empty answer (still
+   * billed). Google's guidance is at least 32,768; the cap costs nothing by
+   * itself because billing is by tokens actually generated.
+   */
+  protected applyOutputTokenFloor(model: string, maxTokens: number): number {
+    const version = getGeminiVersion(model);
+    const floor = ConfigService.GEMINI_4_MIN_OUTPUT_TOKENS;
+    if (version !== null && version >= 4 && maxTokens < floor) {
+      return floor;
+    }
+    return maxTokens;
+  }
+
+  /** Map the SDK usage metadata, including thinking and tool-use tokens. */
+  protected mapUsage(usage: any): UsageMetadata | undefined {
+    if (!usage) return undefined;
+    return {
+      promptTokenCount: usage.promptTokenCount || 0,
+      candidatesTokenCount: usage.candidatesTokenCount || 0,
+      totalTokenCount: usage.totalTokenCount || 0,
+      ...(usage.thoughtsTokenCount
+        ? { thoughtsTokenCount: usage.thoughtsTokenCount }
+        : {}),
+      ...(usage.toolUsePromptTokenCount
+        ? { toolUsePromptTokenCount: usage.toolUsePromptTokenCount }
+        : {}),
+    };
+  }
+
+  /**
+   * Fail loudly when the model produced no text instead of returning an
+   * empty analysis. The common cause on thinking models is the whole
+   * maxTokens budget being consumed by reasoning (finishReason MAX_TOKENS).
+   */
+  protected ensureTextOutput(
+    response: any,
+    text: string,
+    model: string,
+    maxOutputTokens?: number
+  ): void {
+    if (text && text.trim().length > 0) return;
+
+    const candidate = response?.candidates?.[0];
+    const finishReason: string | undefined = candidate?.finishReason;
+    const blockReason: string | undefined =
+      response?.promptFeedback?.blockReason;
+    const thoughts = response?.usageMetadata?.thoughtsTokenCount;
+
+    if (finishReason === 'MAX_TOKENS') {
+      throw new ProviderError(
+        `${model} used the whole output budget${maxOutputTokens ? ` (maxTokens=${maxOutputTokens})` : ''} before writing an answer${thoughts ? ` (${thoughts} tokens went to thinking)` : ''}. Raise maxTokens / MAX_TOKENS, or lower thinkingLevel.`,
+        this.providerName
+      );
+    }
+    if (blockReason) {
+      throw new ProviderError(
+        `The request was blocked before generation (blockReason: ${blockReason}). Adjust the prompt or media, or relax SAFETY_THRESHOLD.`,
+        this.providerName
+      );
+    }
+    throw new ProviderError(
+      `${model} returned no text (finishReason: ${finishReason ?? 'unknown'}).`,
+      this.providerName
+    );
   }
 
   /**

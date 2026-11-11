@@ -5,9 +5,11 @@ A powerful Model Context Protocol (MCP) server that provides AI-powered image an
 ## Features
 
 - **Dual Provider Support**: Choose between Google Gemini API and Vertex AI
-- **Multimodal Analysis**: Images, videos (agentic understanding), audio, and documents (PDF tables/charts/scans)
+- **Multimodal Analysis**: Images, videos (static or agentic, chosen by duration), audio, and documents (PDF, Word, PowerPoint, Excel, OpenDocument)
+- **Calibrated Checks**: `evaluate_media` answers yes/no, pick-one and rubric questions about any media with probabilities instead of prose (Gemini Decisions API, typically under a second for images)
 - **Dedicated Transcription**: gemini-3.5-transcribe with word timestamps, speaker diarization, 85+ languages
-- **Image Editing & Generation**: Nano Banana editing, annotation, composition, and video-to-image thumbnails
+- **Image Editing & Generation**: Nano Banana 2.1 editing, annotation, composition, and video-to-image thumbnails
+- **Current Models**: Gemini 3.5 Flash-Lite (default), 3.8 Flash, and Gemini 4 Argon/Carbon
 - **Flexible File Handling**: One canonical streaming upload path (Files API) for any size up to 2GB
 - **Storage Integration**: Built-in Google Cloud Storage support
 - **Comprehensive Validation**: Zod-based data validation throughout
@@ -245,7 +247,7 @@ npx ai-vision-mcp
 
 ## MCP Tools
 
-The server provides eleven MCP tools:
+The server provides fourteen MCP tools:
 
 ### 1) `analyze_image`
 
@@ -481,9 +483,9 @@ Verified on a 1080p screencast with 10px text: video-level analysis at `high` re
 
 ### 7) `edit_image`
 
-Edits, annotates, or composes images using Gemini native image generation (Nano Banana 2, `gemini-3.1-flash-image` by default via `EDIT_IMAGE_MODEL`; `gemini-3-pro-image` for highest quality, `gemini-3.1-flash-lite-image` for lowest latency). Accepts 1-14 input images and returns the edited image (file + inline preview).
+Edits, annotates, or composes images using Gemini native image generation. The default model is Nano Banana 2.1 (`gemini-nano-banana-2.1`, GA October 2026), which replaces the now-deprecated `gemini-3.1-flash-image`. Set `EDIT_IMAGE_MODEL` to `gemini-3-pro-image` for studio-quality 4K and layouts, or `gemini-3.1-flash-lite-image` for the lowest latency. Accepts 1-14 input images and returns the edited image (file + inline preview).
 
-**Video-to-image:** pass `videoSource` (YouTube URL, local video path, or `files/` reference) to generate thumbnails, movie posters, or summary infographics grounded in actual video content - e.g. "generate a clean 16:9 thumbnail with a catchy title". Exclusive to `gemini-3.1-flash-image` (auto-selected when `videoSource` is set); `imageSources` becomes optional.
+**Video-to-image:** pass `videoSource` (YouTube URL, local video path, or `files/` reference) to generate thumbnails, movie posters, or summary infographics grounded in actual video content - e.g. "generate a clean 16:9 thumbnail with a catchy title". `imageSources` becomes optional. This needs an image model that accepts video: `gemini-nano-banana-2.1` does, `gemini-3-pro-image` does not ("Audio input modality is not enabled for this model"), so the server uses `gemini-nano-banana-2.1` for video requests when `EDIT_IMAGE_MODEL` cannot take video.
 
 **Typical uses:**
 - Write or draw on an image: "Add a red arrow pointing at the Save button and write 'CLICK HERE'"
@@ -496,9 +498,9 @@ Edits, annotates, or composes images using Gemini native image generation (Nano 
 - `prompt` (string): the edit instruction; reference inputs as "image 1", "image 2"
 - `outputFilePath` (string, optional): where to save (extra outputs get `-2`, `-3` suffixes)
 - `aspectRatio` (optional): defaults to the input image's ratio
-- `imageSize` (optional): `512`, `1K` (default), `2K`, `4K`
+- `imageSize` (optional): `1K` (default), `2K`, `4K`. Use `2K` or `4K` when the image contains small text; at `1K` fine text is redrawn inexactly. `512` only exists on the deprecated `gemini-3.1-flash-image` and is raised to `1K` on other models.
 
-**Note:** generative editing re-renders the whole image - unedited regions stay close but are not pixel-identical. For pixel-exact box overlays use `detect_objects_in_image` / `segment_objects_in_image` instead.
+**Note:** generative editing re-renders the whole image - unedited regions stay close but are not pixel-identical. For pixel-exact box overlays use `detect_objects_in_image` / `segment_objects_in_image` instead. When the model declines a request, the error includes its finish reason (for example `PROHIBITED_CONTENT`).
 
 ### 8) `analyze_audio`
 
@@ -518,26 +520,92 @@ Dedicated speech-to-text using `gemini-3.5-transcribe` (GA Aug 2026), purpose-bu
 **Parameters:**
 - `audioSource` (string): URL, base64 data URI, local file path, or `files/` reference
 - `options` (object, optional):
-  - `diarization` (boolean) - label speakers (`spk_1`, `spk_2`, ...)
-  - `wordTimestamps` (boolean) - word-level timing; segments get start-offset prefixes
+  - `diarization` (boolean) - label speakers; segments are prefixed like `[spk:0]`
+  - `wordTimestamps` (boolean) - word-level timing; segments get start-offset prefixes like `[3.1s]`
   - `mode` (`verbatim` default | `smart`) - smart mode removes filler words and adds formatting (incompatible with diarization/timestamps)
   - `languageCodes` (string[]) - BCP-47 hints, e.g. `["en-US", "ro-RO"]`
   - `customVocabulary` (string[]) - up to 1000 terms to bias recognition (names, jargon; incompatible with `wordTimestamps`)
 
-Override the model with the `TRANSCRIBE_AUDIO_MODEL` env var.
+Audio without speech returns an empty transcript rather than an error. Override the model with the `TRANSCRIBE_AUDIO_MODEL` env var.
 
 ### 10) `analyze_document`
 
-Native document understanding: PDFs are processed visually (layouts, tables, charts, diagrams, handwriting, scanned pages - up to 1000 pages), plus text formats (txt, md, html, csv, xml, rtf, json). Each PDF page costs ~258 tokens at default resolution.
+Native document understanding: PDFs are processed visually (layouts, tables, charts, diagrams, handwriting, scanned pages - up to 1000 pages). Microsoft Office and OpenDocument files and text formats are supported as well. Each PDF page costs ~258 tokens at default resolution.
+
+| Format | Extensions | What the model receives |
+| --- | --- | --- |
+| PDF | `.pdf` | Every page rendered visually |
+| Word / OpenDocument text | `.docx`, `.dotx`, `.odt` | Text of the whole file (plus embedded images for `.docx`); page layout and charts are not rendered |
+| PowerPoint | `.pptx` | Text of all slides plus embedded images; slides are not rendered |
+| Legacy and OpenDocument presentations/docs | `.doc`, `.ppt`, `.odp` | Every page or slide rendered as an image |
+| Spreadsheets | `.xlsx`, `.xls`, `.ods` | Flattened CSV cell values: no sheet names, formatting, or (for `.xlsx`/`.xls`) formulas |
+| Text | `.txt`, `.md`, `.html`, `.csv`, `.xml`, `.rtf`, `.json`, `.yaml`, `.log`, `.sql` | The text itself |
+
+Two things to know. When layout or charts matter in a Word or PowerPoint file, export it to PDF first. For spreadsheets, Google documents that only the first sheet is read; in testing a three-sheet workbook came through with its first two sheets concatenated and no boundary between them, so do not rely on later sheets and put the sheet you care about first. Spreadsheet results carry this caveat in `metadata.note`.
 
 **Parameters:**
 - `documentSource` (string): URL, base64 data URI, local file path, or `files/` reference
 - `prompt` (string): e.g. "Extract all invoice line items as JSON", "What are the payment terms?"
-- `options` (object, optional): `mediaResolution` (use `high`/`ultra_high` for dense tables and small print), `thinkingLevel`, `maxTokens`, `seed`
+- `options` (object, optional): `mediaResolution` (use `high` for dense tables and small print; `ultra_high` is rejected by the API for documents, so it is treated as `high`), `thinkingLevel`, `maxTokens`, `seed`
 
 Documents upload via the same canonical streaming Files API path as video/audio (any size, 48h reuse via the returned `files/` reference). Override the model with `ANALYZE_DOCUMENT_MODEL` (defaults to the image model).
 
-### 11) `start_video_analysis` + `get_analysis_result`
+### 11) `evaluate_media`
+
+Answers closed-ended questions about images, videos, audio, PDFs or plain text with **calibrated probabilities instead of prose**, using the Gemini Decisions API (`gemini-decision-1`, released November 2026). Every question is scored independently against the same input in one call, with zero output tokens.
+
+Use it for anything you want to branch on or verify rather than read:
+
+- Visual assertions on screenshots: "Is an error banner visible?", "Is the Submit button disabled?"
+- Classifying UI state: which page, which theme, which step of a flow
+- Checking a recording for an event, or triaging documents
+
+**Question types:**
+
+| Type | Asks | Returns |
+| --- | --- | --- |
+| `yes_no` | Does a statement hold? | `answer` (boolean), `probability` (P(yes), 0.01-0.99) |
+| `choice` | Which one of a fixed list? | `answer` (option id), `probabilities` per option |
+| `score` | Where on an ordered rubric? | `level` + `levelDescription` (most likely level), `score` (probability-weighted average), `probabilities` per level |
+
+Every answer also has `confidence` and a `lowConfidence` flag (confidence below 0.7). Treat low-confidence answers as "unsure" and follow up with `analyze_image` / `analyze_video`.
+
+**Parameters:**
+- `mediaSources` (array, 0-16): local paths, HTTPS URLs, base64 data URIs, or `files/` references. Images, video, audio and PDF can be mixed in one call.
+- `context` (string, optional): text shared by all questions, or the whole input when evaluating text only
+- `questions` (array, 1-1000): each has `id`, `type`, `question`, plus `yesMeans`/`noMeans` (yes_no), `options` (choice), or `levels` (score)
+- `options.mediaResolution` (optional): `low`, `medium`, `high`, `ultra_high` (images only; video is capped at `high`)
+
+**Example:**
+```json
+{
+  "mediaSources": ["/tmp/screenshot.png"],
+  "questions": [
+    { "id": "error_visible", "type": "yes_no", "question": "Does the screenshot show an error message or alert?" },
+    { "id": "page", "type": "choice", "question": "What kind of page is this?",
+      "options": { "dashboard": "Monitoring or metrics page", "form": "Data entry form", "other": "Anything else" } },
+    { "id": "severity", "type": "score", "question": "How severe is the operational state shown?",
+      "levels": ["Everything healthy", "Minor degradation", "One component failing", "Widespread outage"] }
+  ],
+  "options": { "mediaResolution": "high" }
+}
+```
+
+Returns `answers` keyed by question id plus a one-line-per-question `summary`:
+
+```
+error_visible: YES (P(yes)=92%, confidence 92%)
+page: dashboard (confidence 96%)
+severity: level 2/3 "One component failing" (expected score 1.71, confidence 56%) [low confidence]
+```
+
+Measured in November 2026: three to five questions about a 1920x1080 screenshot take 0.7-1.0 seconds and about 1,400 input tokens; a 98-second video takes about 4.7 seconds (after upload) and 10,400 tokens; a 24-page PDF about 1.2 seconds and 20,500 tokens.
+
+**Writing good questions:** ask one thing per question, phrase it positively, write the full question (the model never sees the `id`), give every option and level a short description, and include a catch-all option such as `other`.
+
+**Limits:** Gemini Developer API only (not Vertex AI). No YouTube URLs, `gs://` URIs or Office documents - use `analyze_video` / `analyze_document` for those. Requires API version `v1beta`, which this server uses by default.
+
+### 12) `start_video_analysis` + `get_analysis_result`
 
 The async-job pattern for videos whose upload + processing exceeds MCP client tool timeouts (Cursor enforces ~60 seconds per tool call, and progress notifications do not reliably reset it in TypeScript-SDK-based clients).
 
@@ -548,9 +616,26 @@ Measured on a 377MB, 5-minute 240fps screen recording: job completes in ~160s (1
 
 All long-running tools also emit MCP `notifications/progress` heartbeats every 8 seconds (when the client sends a `progressToken`), which keeps calls alive on clients that reset their timeout on progress.
 
-### 12) `analyze_video`
+### 13) `analyze_video`
 
-**Agentic video understanding (default).** On supported models (Gemini 3.6+, 3.5-flash-lite) the model navigates the video on demand - searching the transcript and fetching only the frames it needs - instead of statically ingesting every frame. Measured on a 45s video: 40 prompt tokens agentic vs 13,573 static, with the same answer quality; Google reports up to 66% cost reduction and better accuracy on long videos. Control it with the `processing` option (`agentic`/`static`) or the `VIDEO_PROCESSING` env var. Using `videoMetadata` (clipping/fps) automatically switches the request to static, since the API does not allow combining them; unsupported models also fall back to static.
+**Processing modes.** Gemini can read a video two ways, and the right one depends on length:
+
+- **Static** ingests frames at a fixed rate in a single pass. Cost is predictable (about 100 tokens per second of video at default resolution, about 300 at `high`) and it is the fastest option for short clips, broad summaries and frame-precise inspection.
+- **Agentic** (Gemini 4, 3.6+ Flash, 3.5 Flash-Lite) lets the model navigate the video on demand - searching the transcript and fetching only the frames it needs. On long videos Google reports up to 88% fewer tokens and about 7% better quality. Each navigation step is billed as tool-use and thinking tokens, so on short clips the cost depends heavily on the question.
+
+The default is **`auto`**: static for videos under 5 minutes, agentic for longer ones or when the duration is unknown (YouTube URLs). Override per call with the `processing` option (`auto` / `agentic` / `static`), globally with `VIDEO_PROCESSING`, and move the threshold with `VIDEO_AGENTIC_MIN_DURATION` (seconds). `videoMetadata` (clipping/fps) always uses static, since the API does not allow combining them, as do models without agentic support. The mode actually used is returned in `metadata.videoProcessing`.
+
+Measured in November 2026 on one 98-second clip with `gemini-3.8-flash` at `high` resolution:
+
+| Question | Static | Agentic |
+| --- | --- | --- |
+| "Name three animals shown" | 28.5k tokens, 18s | 13.5k tokens, 19s |
+| "When does a giraffe first appear?" | 28.8k tokens, 19s | 135.5k tokens, 59s |
+| "Summarize, listing every animal in order" | 29.6k tokens, 25s | 59.9k tokens, 48s |
+
+Static stayed flat; agentic ranged from half the cost to almost five times the cost and close to the 60-second tool timeout some MCP clients enforce. That is why `auto` keeps short clips on static. This is one clip, so treat the numbers as an illustration rather than a benchmark.
+
+> Earlier versions of this README claimed agentic used "40 prompt tokens vs 13,573 static" on a short clip. That comparison counted only prompt tokens and missed the tool-use tokens agentic spends loading frames. `metadata.usage` now reports `thoughtsTokenCount` and `toolUsePromptTokenCount` so the full cost is visible.
 
 Analyzes a video using AI and returns a detailed description.
 
@@ -560,8 +645,9 @@ Analyzes a video using AI and returns a detailed description.
 - `options` (object, optional): Analysis options:
   - `temperature`, `topP`, `topK`, `maxTokens` - standard generation parameters
   - `videoMetadata` (object) - video clipping and sampling: `fps`, `startOffset`, `endOffset` (e.g. `{ "fps": 5, "startOffset": "10s", "endOffset": "40s" }`)
-  - `mediaResolution` (low/medium/high) - Gemini 3+ token resolution per frame; use `high` (~258 tokens/frame, zoomed reframing) to read small on-screen text such as URLs, code, or UI labels (`ultra_high` is image-only and falls back to `high` for video)
-  - `thinkingLevel` (minimal/low/medium/high) - Gemini 3+ reasoning depth; raise for precise OCR, lower for fast scene summaries
+  - `mediaResolution` (low/medium/high) - token resolution per frame; use `high` (~258 tokens/frame, zoomed reframing) to read small on-screen text such as URLs, code, or UI labels (`ultra_high` is image-only and falls back to `high` for video)
+  - `thinkingLevel` (minimal/low/medium/high) - reasoning depth; `minimal` exists only on `gemini-3.5-flash-lite` and `gemini-3.6-flash` and is raised to `low` on `gemini-3.8-flash` and Gemini 4
+  - `processing` (auto/agentic/static) - see processing modes above
 
 **Supported video sources:**
 - YouTube URLs (e.g., `https://www.youtube.com/watch?v=...`)
@@ -638,8 +724,8 @@ The server uses a hierarchical configuration system where more specific settings
 **Basic Optimization:**
 ```bash
 # General settings
-export TEMPERATURE=0.7
-export MAX_TOKENS=1500
+export TEMPERATURE=0.7      # ignored by Gemini 3.6+ and Gemini 4
+export MAX_TOKENS=16384     # the default; thinking tokens count against it
 
 # Task-specific optimization
 export TEMPERATURE_FOR_IMAGE=0.2     # More precise for images
@@ -661,6 +747,20 @@ export MAX_TOKENS_FOR_DETECT_OBJECTS_IN_IMAGE=8192   # High token limit
 export ANALYZE_IMAGE_MODEL="gemini-3.5-flash-lite"
 export COMPARE_IMAGES_MODEL="gemini-3.8-flash"
 export ANALYZE_VIDEO_MODEL="gemini-3.8-flash"
+export ANALYZE_DOCUMENT_MODEL="gemini-4-carbon"   # dense PDFs, hardest reasoning
+```
+
+**Video processing, logging and API version:**
+```bash
+# auto (default): static under 5 minutes, agentic for longer videos
+export VIDEO_PROCESSING=auto            # auto | agentic | static
+export VIDEO_AGENTIC_MIN_DURATION=300   # seconds; auto switches to agentic from here
+
+# Ask Google not to store requests in the project's logs (the default here)
+export GEMINI_STORE_REQUESTS=false      # false | true | project
+
+# v1beta is required for agentic video, transcription options and evaluate_media
+export GEMINI_API_VERSION=v1beta
 ```
 
 **Gemini 3+ Media Resolution & Thinking Level:**
@@ -678,11 +778,50 @@ export THINKING_LEVEL_FOR_VIDEO=medium
 ```
 </details>
 
+## Choosing a Model
+
+Google's guidance as of November 2026, with what was measured here:
+
+| Model | Role | Price per 1M tokens (in / out) | Notes |
+| --- | --- | --- | --- |
+| `gemini-3.5-flash-lite` | Default here. Fastest and cheapest | $0.30 / $2.50 | Supports `minimal` thinking |
+| `gemini-3.8-flash` | Google's recommended general-purpose model | $0.75 / $3.75 through Dec 31, 2026, then $1.50 / $7.50 | Thinking `low` / `medium` (default) / `high` |
+| `gemini-4-argon` | Efficient Gemini 4 reasoning | $2 / $10 through Nov 30, 2026, then $4 / $20 | Paid tier only |
+| `gemini-4-carbon` | Strongest reasoning, most thinking per turn | Same as Argon | Paid tier only |
+
+On one test - transcribing every character of a 1920x1080 dashboard screenshot with 11-18px text, 13 strings checked - `ultra_high` resolution mattered more than the model: every model scored 13/13 with it (`gemini-3.5-flash-lite` in 1.2 seconds), while at default resolution only the Gemini 4 models got all 13 and the Flash models missed the smallest footer text. So for reading screenshots, set `MEDIA_RESOLUTION_FOR_IMAGE=ultra_high` first, and reach for Gemini 4 when the task needs reasoning rather than reading.
+
+**Gemini 4 specifics handled by this server:**
+- Thinking tokens count against the output limit, so a small `maxTokens` can be spent entirely on reasoning and return nothing. The server raises the limit to at least 32,768 on Gemini 4 models (Google's recommendation). Billing is by tokens actually generated, not by the limit.
+- `minimal` thinking is not supported and is raised to `low`.
+- Sampling parameters (`temperature`, `topP`, `topK`) are ignored by the API and are not sent.
+- Hard prompts can think for minutes; the HTTP timeout defaults to 15 minutes (`GEMINI_TIMEOUT_MS`). For long work in clients with a short tool timeout, use `start_video_analysis`.
+
+**Deprecations to be aware of:** `gemini-3.1-flash-image` is deprecated in favor of `gemini-nano-banana-2.1`; `gemini-3.7-flash` and `gemini-3.5-flash` now route to `gemini-3.8-flash` and `gemini-3.6-flash`; from December 1, 2026 `gemini-2.5-pro` and `gemini-2.5-flash` route to `gemini-3.8-flash` and `gemini-3.5-flash-lite`.
+
+## Privacy: Request Logging
+
+Since October 26, 2026 the Gemini API stores `generateContent` requests by default for newly created paid projects (older projects keep their previous setting). Screenshots and recordings can contain sensitive data, so this server sends `store: false` with every request unless you change `GEMINI_STORE_REQUESTS`:
+
+- `false` (default): never store
+- `true`: store, for example to debug in the AI Studio logs dashboard
+- `project`: send nothing and follow the project-level setting in AI Studio
+
+This applies to the Gemini Developer API provider. Uploaded files are still kept by the Files API for 48 hours, as before.
+
 ## Troubleshooting (stdio / Codex / Claude Code)
 
 ### 0) Tool call times out on large videos (Cursor ~60s limit)
 
 Cursor (and other TypeScript-SDK-based clients) enforce a hard ~60 second timeout per MCP tool call that progress notifications do not reliably reset. Uploading + processing a large local video takes minutes, so `analyze_video` on big files dies at the client. Use the async pattern instead: `start_video_analysis` (returns a jobId instantly) then poll `get_analysis_result` every 15-30 seconds. The server also fixed its own Files API processing wait (was capped at 60s, now up to 10 minutes with backoff).
+
+### 0b) Empty or cut-off answers
+
+Current Gemini models think before answering, and thinking tokens count against the output limit. If the limit is too small the answer is truncated or missing. The server now reports this instead of returning an empty string: an error such as "used the whole output budget before writing an answer (497 tokens went to thinking)", or a `metadata.note` plus `finishReason: "MAX_TOKENS"` when the answer was cut off. Raise `maxTokens` / `MAX_TOKENS` (default 16384) or lower `thinkingLevel`.
+
+### 0c) "Agentic video processing is not enabled for api version v1"
+
+`@google/genai` 3.x defaults to API version `v1`, which lacks agentic video, transcription options and the Decisions API. This server pins `v1beta`; the error only appears if `GEMINI_API_VERSION` was set to `v1`.
 
 ### 1) "Transport closed" / tool call fails
 
@@ -718,7 +857,7 @@ If stdout is polluted, clients (Codex/Claude Code) may disconnect and report `Tr
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 22+ (required by `@google/genai` 3.x; Node 20 reached end-of-life in April 2026)
 - npm or yarn
 
 ### Setup

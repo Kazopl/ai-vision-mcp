@@ -1,6 +1,6 @@
 {
   "name": "ai-vision-mcp",
-  "version": "0.0.7",
+  "version": "0.1.0",
   "description": "Vision MCP server that provides AI-powered image and video analysis using Google Gemini and Vertex AI",
   "main": "dist/index.js",
   "type": "module",
@@ -58,7 +58,7 @@
   "homepage": "https://github.com/Kazopl/ai-vision-mcp#readme",
   "dependencies": {
     "@google-cloud/storage": "^7.21.0",
-    "@google/genai": "^2.21.0",
+    "@google/genai": "^3.2.0",
     "@jsquash/avif": "^2.1.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^16.4.5",
@@ -89,7 +89,7 @@
     "vitest": "^4.1.10"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "publishConfig": {
     "access": "public"

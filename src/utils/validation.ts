@@ -60,6 +60,7 @@ export const ConfigSchema = z.object({
   EDIT_IMAGE_MODEL: z.string().min(1).optional(),
   ANALYZE_DOCUMENT_MODEL: z.string().min(1).optional(),
   TRANSCRIBE_AUDIO_MODEL: z.string().min(1).optional(),
+  DECISION_MODEL: z.string().min(1).optional(),
 
   // Gemini API configuration
   GEMINI_API_KEY: z.string().min(1).optional(),
@@ -87,7 +88,16 @@ export const ConfigSchema = z.object({
   TEMPERATURE: z.coerce.number().min(0).max(2).optional().default(0.8),
   TOP_P: z.coerce.number().min(0).max(1).optional().default(0.95),
   TOP_K: z.coerce.number().int().min(1).max(100).optional().default(30),
-  MAX_TOKENS: z.coerce.number().int().min(1).max(8192).optional().default(1000),
+  // Output cap. Thinking tokens count against it on current models, so a
+  // small value truncates or empties the answer; billing is by tokens
+  // actually generated, not by the cap.
+  MAX_TOKENS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(65536)
+    .optional()
+    .default(16384),
 
   // Task-specific API parameters
   TEMPERATURE_FOR_IMAGE: z.number().min(0).max(2).optional(),
@@ -119,8 +129,18 @@ export const ConfigSchema = z.object({
     .enum(['minimal', 'low', 'medium', 'high'])
     .optional(),
 
-  // Video processing mode (Gemini 3.6+, 3.5-flash-lite)
-  VIDEO_PROCESSING: z.enum(['agentic', 'static']).optional(),
+  // Video processing mode: auto (duration-aware, default) | agentic | static
+  VIDEO_PROCESSING: z.enum(['auto', 'agentic', 'static']).optional(),
+  // In auto mode, videos at least this long (seconds) use agentic processing
+  VIDEO_AGENTIC_MIN_DURATION: z.number().int().nonnegative().optional(),
+
+  // Gemini Developer API version. v1beta is required for agentic video,
+  // transcription options and the Decisions API.
+  GEMINI_API_VERSION: z.string().min(1).optional(),
+
+  // Request logging: 'false' (default, never store), 'true', or 'project'
+  // (send nothing and follow the AI Studio project setting)
+  GEMINI_STORE_REQUESTS: z.enum(['true', 'false', 'project']).optional(),
 
   // Agentic Vision default for image analysis (Gemini 3+)
   AGENTIC_VISION: z.enum(['true', 'false']).optional(),
