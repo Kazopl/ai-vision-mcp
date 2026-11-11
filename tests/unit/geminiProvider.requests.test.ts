@@ -411,6 +411,20 @@ describe('video processing mode', () => {
     expect(filesGetMock).not.toHaveBeenCalled();
   });
 
+  test('auto uses a caller-supplied duration for YouTube (YOUTUBE_API_KEY lookup)', async () => {
+    const youtube = 'https://www.youtube.com/watch?v=9hE5-98ZeCg';
+
+    await createProvider().analyzeVideo(youtube, 'summarize', {
+      durationSeconds: 90,
+    });
+    expect(videoPart()).not.toHaveProperty('mediaProcessing');
+
+    await createProvider().analyzeVideo(youtube, 'summarize', {
+      durationSeconds: 1800,
+    });
+    expect(videoPart().mediaProcessing).toBe('AGENTIC');
+  });
+
   test('VIDEO_AGENTIC_MIN_DURATION moves the auto threshold', async () => {
     process.env.VIDEO_AGENTIC_MIN_DURATION = '60';
     fileWithDuration('98s');

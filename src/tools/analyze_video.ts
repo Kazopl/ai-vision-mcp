@@ -85,6 +85,10 @@ export async function analyze_video(
           const durationSeconds = await fetchYouTubeDuration(args.videoSource, youtubeApiKey);
 
           if (durationSeconds !== null) {
+            // Lets auto processing choose static for short YouTube clips
+            // (without it the duration is unknown and auto uses agentic).
+            options.durationSeconds = durationSeconds;
+
             // Get the model name being used for video analysis
             const modelName =
               config.VIDEO_MODEL || ConfigService.getDefaultVideoModel();

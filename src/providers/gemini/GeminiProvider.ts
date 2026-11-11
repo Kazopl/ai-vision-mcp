@@ -563,7 +563,7 @@ export class GeminiProvider extends BaseVisionProvider {
       const videoProcessing = this.getVideoPartProcessing(
         model,
         options,
-        durationSeconds
+        durationSeconds ?? options?.durationSeconds
       );
       if (videoProcessing) {
         content.mediaProcessing = videoProcessing;

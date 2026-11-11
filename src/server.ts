@@ -238,7 +238,25 @@ async function withProgressHeartbeat<T>(
     typeof ctx?.mcpReq?.notify === 'function'
       ? (notification: unknown) => ctx.mcpReq.notify(notification)
       : undefined;
-  if (progressToken === undefined || !notify) {
+  // Fallback for clients that send no progress token: a request-scoped log
+  // notification. Clients with an idle timeout that resets on any incoming
+  // notification stay alive through it; others simply ignore it.
+  const log: ((message: string) => Promise<void>) | undefined =
+    typeof ctx?.mcpReq?.log === 'function'
+      ? (message: string) => ctx.mcpReq.log('info', message, 'heartbeat')
+      : undefined;
+
+  const beat: ((tick: number, message: string) => Promise<void>) | undefined =
+    progressToken !== undefined && notify
+      ? (tick, message) =>
+          notify({
+            method: 'notifications/progress',
+            params: { progressToken, progress: tick, message },
+          })
+      : log
+        ? (_tick, message) => log(message)
+        : undefined;
+  if (!beat) {
     return fn();
   }
 
@@ -247,18 +265,12 @@ async function withProgressHeartbeat<T>(
   const timer = setInterval(() => {
     tick++;
     const elapsed = Math.round((Date.now() - startedAt) / 1000);
-    Promise.resolve(
-      notify({
-        method: 'notifications/progress',
-        params: {
-          progressToken,
-          progress: tick,
-          message: `${label}... ${elapsed}s elapsed`,
-        },
-      })
-    ).catch(() => {
-      // Never let heartbeat failures affect the tool call
-    });
+    // Promise.resolve().then() so a synchronous throw is caught as well
+    Promise.resolve()
+      .then(() => beat(tick, `${label}... ${elapsed}s elapsed`))
+      .catch(() => {
+        // Never let heartbeat failures affect the tool call
+      });
   }, 8000);
 
   try {

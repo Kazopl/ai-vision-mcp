@@ -484,8 +484,13 @@ export class VertexAIProvider extends BaseVisionProvider {
       }
 
       // Processing mode. Vertex sources are gs:// URIs or YouTube URLs, so
-      // the duration is unknown and auto resolves to agentic when supported.
-      const videoProcessing = this.getVideoPartProcessing(model, options);
+      // the duration is only known when the caller supplies it (YouTube with
+      // YOUTUBE_API_KEY); otherwise auto resolves to agentic when supported.
+      const videoProcessing = this.getVideoPartProcessing(
+        model,
+        options,
+        options?.durationSeconds
+      );
       if (videoProcessing) {
         videoPart.mediaProcessing = videoProcessing;
       }

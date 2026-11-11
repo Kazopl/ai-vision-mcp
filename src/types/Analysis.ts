@@ -37,6 +37,11 @@ export interface AnalysisOptions {
   processing?: VideoProcessingMode; // Video processing mode: auto (default) | agentic | static
   agenticVision?: boolean; // Agentic Vision: model zooms/crops via code execution (Gemini 3+)
   seed?: number; // Best-effort reproducibility across identical requests
+  /**
+   * Known video duration in seconds, when the caller has it and the provider
+   * cannot determine it (YouTube URLs). Used by auto video processing.
+   */
+  durationSeconds?: number;
 }
 
 /**

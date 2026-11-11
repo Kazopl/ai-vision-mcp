@@ -617,14 +617,14 @@ Measured in November 2026: three to five questions about a 1920x1080 screenshot 
 
 ### 12) `start_video_analysis` + `get_analysis_result`
 
-The async-job pattern for videos whose upload + processing exceeds MCP client tool timeouts (Cursor enforces ~60 seconds per tool call, and progress notifications do not reliably reset it in TypeScript-SDK-based clients).
+The async-job pattern for work that outlasts an MCP client's tool-call timeout (commonly 60 seconds; see [Troubleshooting](#0-tool-call-times-out-on-large-videos)). It works in every client because each individual call returns immediately.
 
 - `start_video_analysis` takes the same arguments as `analyze_video` and returns a `jobId` immediately (measured: 0.0s even for a 377MB file) while the work runs in the background.
 - `get_analysis_result` polls the job: `running` (with stage message + elapsed time), `done` (full analysis result), or `error`. Results are kept for 30 minutes.
 
 Measured on a 377MB, 5-minute 240fps screen recording: job completes in ~160s (110s upload + 50s processing/analysis) while every individual tool call stays under one second.
 
-All long-running tools also emit MCP `notifications/progress` heartbeats every 8 seconds (when the client sends a `progressToken`), which keeps calls alive on clients that reset their timeout on progress.
+All long-running tools also emit a heartbeat every 8 seconds: an MCP `notifications/progress` when the client sends a `progressToken`, otherwise a request-scoped log notification. That keeps synchronous calls alive on clients whose timeout resets on incoming notifications.
 
 ### 13) `analyze_video`
 
@@ -821,9 +821,15 @@ This applies to the Gemini Developer API provider. Uploaded files are still kept
 
 ## Troubleshooting (stdio / Codex / Claude Code)
 
-### 0) Tool call times out on large videos (Cursor ~60s limit)
+### 0) Tool call times out on large videos
 
-Cursor (and other TypeScript-SDK-based clients) enforce a hard ~60 second timeout per MCP tool call that progress notifications do not reliably reset. Uploading + processing a large local video takes minutes, so `analyze_video` on big files dies at the client. Use the async pattern instead: `start_video_analysis` (returns a jobId instantly) then poll `get_analysis_result` every 15-30 seconds. The server also fixed its own Files API processing wait (was capped at 60s, now up to 10 minutes with backoff).
+MCP clients put a timeout on every tool call, commonly 60 seconds, and uploading plus processing a large local video takes minutes. Whether a heartbeat extends that timeout depends on the client (status as of November 2026):
+
+- **Cursor IDE:** according to Cursor staff, the IDE's MCP client has had a progress-aware idle timeout since July 2026 that resets when notifications arrive. The server's heartbeats are designed for exactly that, but this has not been verified inside Cursor here.
+- **Cursor CLI / ACP:** a fixed 60 seconds that ignores progress. Self-hosted workers can raise it with `agent worker --mcp-tool-timeout server=seconds`.
+- **Any client:** `start_video_analysis` returns a jobId immediately; poll `get_analysis_result` every 15-30 seconds. This is the approach that works everywhere.
+
+Short clips rarely hit the limit now that `auto` processing keeps them on static (18-25 seconds for a 98-second clip at high resolution in testing). Agentic processing on the same clip took up to 59 seconds, so if you force `VIDEO_PROCESSING=agentic`, prefer the job tools. Cursor does not support the MCP Tasks extension yet, which is why the server keeps its own job tools. The server also waits up to 10 minutes (with backoff) for the Files API to finish processing an upload.
 
 ### 0b) Empty or cut-off answers
 
